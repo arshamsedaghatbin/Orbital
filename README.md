@@ -19,6 +19,7 @@ Powered by **Gemini 3.1**, Orbital filters through human chaos to extract clinic
 A sovereign signal parser that extracts:
 - **Symbol & Side Extraction**: Identifies XAUUSD, Gold, or majors instantly.
 - **Precision Level Detection**: Extracts Entry, SL, and multiple TP targets.
+- **AI Signal Updates**: Correctly identifies and processes message updates to modify existing pending orders or MT5 positions.
 - **Zero-Noise Filtering**: Discards casual chat, results updates, and marketing fluff to prevent invalid order entries.
 
 ### 📡 Telethon Neural Link
@@ -43,6 +44,9 @@ Forget 1:2. Orbital's management logic includes **Aggressive Trailing** and **Au
 
 ### 💎 Smart Calibration (Dynamic Risk)
 Set your risk in USD, not just lots. Orbital calculates the exact position size based on your current equity and SL distance, ensuring every trade is mathematically optimized.
+
+### 🛡️ Boot-Time Protection Shield
+Prevents re-processing of historical signals. The bot intelligently filters out any message received before its current session start, ensuring that system restarts never trigger redundant duplicate trades or entry executions.
 
 ---
 

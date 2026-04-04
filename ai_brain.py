@@ -30,20 +30,23 @@ class AIBrain:
            - If no side is found but SL is > Entry, it's a SELL. If SL < Entry, it's a BUY.
            - "E", "Ent", "Price", "Entry" all mean ENTRY.
            - "SL", "Stop", "StopLoss", "S/L" all mean SL.
-        2. NOISE: Only use this for greetings ("Hello"), links (https://...), or pure news analysis with no trade numbers.
+        2. UPDATES: If the message starts with "Update" or mentions "Change" for a symbol.
+           - Map these to { "type": "UPDATE", ... }
+        3. NOISE: Only use this for greetings ("Hello"), links (https://...), or pure news analysis with no trade numbers.
            - Never mark a message with a symbol and TWO price numbers as NOISE.
-        3. NUMERIC ACCURACY: Extract prices exactly as written.
-        4. IMAGE ANALYSIS: If a chart image is provided:
+        4. NUMERIC ACCURACY: Extract prices exactly as written.
+        5. IMAGE ANALYSIS: If a chart image is provided:
            - Look for watermark or header symbols (XAUUSD, GOLD).
            - Look for horizontal lines: Red/Orange is usually SL. Green/Blue is usually Entry/TP.
            - Extract SL and Entry from the numeric labels next to these lines.
-        5. DEFAULT SYMBOL: "XAUUSD" if not specified.
-        6. OUTPUT: Return ONLY a JSON object.
+        6. DEFAULT SYMBOL: "XAUUSD" if not specified.
+        7. OUTPUT: Return ONLY a JSON object.
 
         EXAMPLES:
-        Text: "XAUUSD Sellstop Entry 4739.4 Sl 4742.9" -> { "type": "NEW", "symbol": "XAUUSD", "entry": 4739.4, "sl": 4742.9, "side": "SELL" }
-        Text: "Gold Sell 2345 Sl 2355" -> { "type": "NEW", "symbol": "XAUUSD", "entry": 2345.0, "sl": 2355.0, "side": "SELL" }
-        Text: "EURUSD Buy 1.08500 Sl 1.08200" -> { "type": "NEW", "symbol": "EURUSD", "entry": 1.08500, "sl": 1.08200, "side": "BUY" }
+        "XAUUSD Sellstop Entry 4739.4 Sl 4742.9" -> { "type": "NEW", "symbol": "XAUUSD", "entry": 4739.4, "sl": 4742.9, "side": "SELL" }
+        "Update Xauusd Sellstop Entry 4740 Sl 4742.9" -> { "type": "UPDATE", "symbol": "XAUUSD", "entry": 4740.0, "sl": 4742.9, "side": "SELL" }
+        "Gold Sell 2345 Sl 2355" -> { "type": "NEW", "symbol": "XAUUSD", "entry": 2345.0, "sl": 2355.0, "side": "SELL" }
+        "EURUSD Buy 1.08500 Sl 1.08200" -> { "type": "NEW", "symbol": "EURUSD", "entry": 1.08500, "sl": 1.08200, "side": "BUY" }
         """
 
         try:

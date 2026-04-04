@@ -226,7 +226,7 @@ class Dashboard:
 
     def render_header(self, state):
         statuses = [
-            ("TG", state.telegram_connected),
+            ("TG", state.tg_connected),
             ("MT5", state.mt5_connected),
             ("AI", state.ai_connected)
         ]
@@ -606,7 +606,7 @@ class Dashboard:
             
             # Show connected session info if available in state
             me_info = "Not Connected"
-            if state.telegram_connected and hasattr(state, 'tg_me'):
+            if state.tg_connected and hasattr(state, 'tg_me'):
                 me_info = state.tg_me
             
             st.write(f"**Connected Account:** `{me_info}`")
@@ -870,7 +870,16 @@ class Dashboard:
                     order_id = msg.get('order_id', '')
                     error = msg.get('error', '')
                     
-                    if order_id:
+                    if msg.get('updated'):
+                        if order_id == "QUEUED_UPDATE":
+                            order_status = "🔄 Queue Updated"
+                        elif order_id:
+                            order_status = f"🔄 MT5 Updated: {order_id}"
+                        elif error == "NOT_FOUND":
+                            order_status = "❌ Not Found"
+                        else:
+                            order_status = "❌ Update Failed"
+                    elif order_id:
                         order_status = f"🟢 MT5: {order_id}"
                     elif msg.get('queued'):
                         order_status = "⏳ Price Queued"
@@ -963,8 +972,8 @@ SL: {s['sl']} | <span style="font-weight: 800; color: {'#00F5FF' if order_id els
             st.markdown("### 📡 TELEGRAM CORE")
             tg_head_col1, tg_head_col2 = st.columns([2, 1])
             with tg_head_col1:
-                tg_status_color = "#00FFA3" if state.telegram_connected else "#FF3D00"
-                st.markdown(f'<p style="color: {tg_status_color}; font-size: 0.7rem; font-weight: 800; margin-top: -10px;">● { ("CONNECTED" if state.telegram_connected else "OFFLINE") if state.telegram_connected is not None else "PENDING" }</p>', unsafe_allow_html=True)
+                tg_status_color = "#00FFA3" if state.tg_connected else "#FF3D00"
+                st.markdown(f'<p style="color: {tg_status_color}; font-size: 0.7rem; font-weight: 800; margin-top: -10px;">● { ("CONNECTED" if state.tg_connected else "OFFLINE") if state.tg_connected is not None else "PENDING" }</p>', unsafe_allow_html=True)
             with tg_head_col2:
                 if st.button("Check 🔄", key="check_tg_p", use_container_width=True):
                     state.commands.append({"type": "TEST_TELEGRAM"})

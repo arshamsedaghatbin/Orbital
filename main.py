@@ -4,7 +4,7 @@ import time
 import os
 import json
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 from dotenv import load_dotenv
 import streamlit as st
 
@@ -97,7 +97,7 @@ class BotState:
                 self.seen_ids.add(entry['msg_id'])
         
         self.is_running = False
-        self.telegram_connected = False
+        self.tg_connected = False
         self.mt5_connected = False
         self.lock = None                # Initialized in worker loop
         self.restart_event = None       # Initialized in worker loop
@@ -115,6 +115,7 @@ class BotState:
         self.tg_phone_code_hash = None
         self.temp_tg_client = None
         self.worker_started = False
+        self.boot_time = datetime.now(timezone.utc) # track bot start time to skip history
         self.channels = [] # List of {"id": str/int, "name": str}
         self.verify_result = None # Temporary storage for verification name
         self.tg_me = None
@@ -136,8 +137,8 @@ class BotState:
 
 
 @st.cache_resource
-def get_bot_state_v3():
-    """V3 naming forces a streamlit cache invalidation to fix attribute errors."""
+def get_bot_state_v4():
+    """V4 naming forces a streamlit cache invalidation to fix attribute errors."""
     return BotState()
 
 
@@ -210,12 +211,19 @@ async def bot_worker(state: BotState):
         listener = TelegramListener(api_id=int(tg_id), api_hash=tg_hash, channel_ids=c_ids, session_name=tg_session)
 
     # ── Helpers ────────────────────────────────────────────────────────────────
-    async def process_signal(raw_text: str, source: str, msg_id: int = None, quiet: bool = False, image_bytes: bytes = None):
+    async def process_signal(raw_text: str, source: str, msg_id: int = None, quiet: bool = False, image_bytes: bytes = None, msg_date: datetime = None):
         """Parse text with AI, auto-execute if signal, persist to disk."""
         if not ai:
             print("⚠️ AI not initialized yet.")
             return
             
+        # ── BOOT TIME FILTER ───────────────────────────────────────────────
+        if msg_date and state.boot_time and msg_date < state.boot_time:
+            if not quiet:
+                diff = (state.boot_time - msg_date).total_seconds()
+                print(f"⏩ Ignoring historical signal (Pre-boot): ID {msg_id} ({int(diff)}s old)")
+            return
+
         # ── UNIQUE CHECK (LOCKED) ──────────────────────────────────────────────
         if msg_id and msg_id in state.seen_ids:
             if not quiet:
@@ -257,6 +265,28 @@ async def bot_worker(state: BotState):
             })
             entry['updated'] = True
             save_history(state.history)
+
+            found_in_queue = False
+            async with (state.lock if state.lock else asyncio.Lock()):
+                # 1. Check pending queue first (local state)
+                for q_item in state.pending_queue:
+                    if q_item['symbol'] == sym:
+                        q_item['data']['entry'] = signal_data['entry']
+                        q_item['data']['sl'] = signal_data['sl']
+                        found_in_queue = True
+                        break
+
+            if found_in_queue:
+                state.logs.append({
+                    "time": datetime.now().strftime("%H:%M:%S"),
+                    "type": "SIGNAL",
+                    "preview": f"✅ [{source}] Local Pending Trade updated for {sym}"
+                })
+                entry['order_id'] = "QUEUED_UPDATE"
+                save_history(state.history)
+                return
+
+            # 2. Check broker positions/orders
             # Use symbol-specific settings
             sym_settings = state.settings.get(sym, state.settings["GLOBAL"])
             if engine:
@@ -270,7 +300,7 @@ async def bot_worker(state: BotState):
                     state.logs.append({
                         "time": datetime.now().strftime("%H:%M:%S"),
                         "type": "SIGNAL",
-                        "preview": f"✅ [{source}] Trade updated: {order_id}"
+                        "preview": f"✅ [{source}] Broker trade updated: {order_id}"
                     })
                     entry['order_id'] = order_id
                     save_history(state.history)
@@ -278,8 +308,9 @@ async def bot_worker(state: BotState):
                     state.logs.append({
                         "time": datetime.now().strftime("%H:%M:%S"),
                         "type": "NOISE",
-                        "preview": f"❌ [{source}] Update failed — no open position for {sym}"
+                        "preview": f"❌ [{source}] Update failed — no active position or queued trade for {sym}"
                     })
+                    entry['error'] = "NOT_FOUND" # So dashboard knows it's not 'filtered'
 
         else:
             # ── NEW: open a fresh trade ───────────────────────────────────
@@ -687,7 +718,7 @@ async def bot_worker(state: BotState):
                     state.metrics[sym].update(sym_metrics)
 
                 # Telegram Status
-                state.telegram_connected = listener is not None and listener.is_connected()
+                state.tg_connected = listener is not None and listener.is_connected()
                 
                 # MT5 Status: Check if connection exists and is actually healthy
                 is_connected = False
@@ -776,7 +807,7 @@ async def bot_worker(state: BotState):
             except Exception as e:
                 print(f"❌ Media download error: {e}")
         
-        await process_signal(message.text or "", source="Telegram", msg_id=message.id, image_bytes=image_bytes)
+        await process_signal(message.text or "", source="Telegram", msg_id=message.id, image_bytes=image_bytes, msg_date=message.date)
 
     # ── High-Frequency Sync Loop ───────────────────────────────────────────────
     async def sync_messages_loop():
@@ -797,7 +828,7 @@ async def bot_worker(state: BotState):
                             image_bytes = await raw.download_media(file=bytes)
                         except: pass
                     # Quiet sync: don't spam 'skipping duplicate' logs every minute
-                    await process_signal(msg['text'], source="Telegram (Sync)", msg_id=msg['id'], quiet=True, image_bytes=image_bytes)
+                    await process_signal(msg['text'], source="Telegram (Sync)", msg_id=msg['id'], quiet=True, image_bytes=image_bytes, msg_date=msg['date'])
             except Exception as e:
                 print(f"Sync Loop Error: {e}")
 
@@ -827,23 +858,13 @@ async def bot_worker(state: BotState):
             if me:
                 state.tg_me = f"{me.first_name} (@{me.username})" if me.username else me.first_name
             
-            state.telegram_connected = True
+            state.tg_connected = True
             state.logs.append({"time": datetime.now().strftime("%H:%M:%S"), "preview": "✅ Telegram Connection Established.", "type": "SYSTEM"})
 
-            # 2. ── Initial Boot Sync ─────────────────
-            # Process signals sent while bot was down
-            print("📡 Checking for missed signals during downtime...")
-            recent = await listener.get_recent_messages(limit=10)
-            for msg in reversed(recent):
-                msg_id = msg['id']
-                if msg_id and msg_id not in state.seen_ids:
-                    # Check for image media in synced messages
-                    raw = msg.get('raw')
-                    image_bytes = None
-                    if raw and raw.photo:
-                        try: image_bytes = await raw.download_media(file=bytes)
-                        except: pass
-                    await process_signal(msg['text'], source="Telegram (Sync)", msg_id=msg_id, quiet=True, image_bytes=image_bytes)
+            # 2. ── SKIP Initial Boot Sync ─────────────────
+            # User requested: only process signals from the moment bot starts.
+            # We skip the check_for_missed_signals block.
+            print("📡 Bot started. Real-time monitoring active (Skipping history).")
             
             # 3. Resolve metadata mapping for display
             print("📡 Updating channel names map...")
@@ -856,10 +877,10 @@ async def bot_worker(state: BotState):
             
         except asyncio.TimeoutError:
             state.logs.append({"time": datetime.now().strftime("%H:%M:%S"), "preview": "⚠️ Telegram Connection Timed Out. Retrying in background...", "type": "ERROR"})
-            state.telegram_connected = False
+            state.tg_connected = False
         except Exception as e:
             state.logs.append({"time": datetime.now().strftime("%H:%M:%S"), "preview": f"❌ Telegram Failed: {str(e)}", "type": "ERROR"})
-            state.telegram_connected = False
+            state.tg_connected = False
             print(f"Telegram Startup Error: {e}")
 
     # ── Execution Logic ───────────────────────────────────────────────────────
@@ -987,7 +1008,7 @@ def run_async_loop(state):
 # --- Dashboard ---
 def main():
     dashboard = Dashboard()
-    state = get_bot_state_v3()
+    state = get_bot_state_v4()
     try:
         dashboard.render_header(state)
     except Exception as e:
@@ -1010,7 +1031,7 @@ def main():
         # Freeze state before rendering to detect background changes accurately
         current_step = state.setup_step
         was_requested = state.tg_code_requested
-        is_connected_before = state.telegram_connected
+        is_connected_before = state.tg_connected
         
         dashboard.render_setup_wizard(state)
         
@@ -1018,7 +1039,7 @@ def main():
         # We check every 500ms to keep it Snappy, but return if we need to rerun
         for _ in range(10): # 5 seconds max wait
             time.sleep(0.5)
-            if state.setup_step != current_step or state.tg_code_requested != was_requested or state.telegram_connected != is_connected_before:
+            if state.setup_step != current_step or state.tg_code_requested != was_requested or state.tg_connected != is_connected_before:
                 st.rerun()
         return
 

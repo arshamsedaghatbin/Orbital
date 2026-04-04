@@ -19,6 +19,7 @@ phone_code_hash.txt
 # Streamlit logs/data
 .streamlit/
 history.json
+signals_history.json
 channels.json
 
 # Logs
