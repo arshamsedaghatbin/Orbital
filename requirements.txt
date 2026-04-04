@@ -1,0 +1,8 @@
+telethon
+google-genai
+asyncio
+metaapi-cloud-sdk
+streamlit
+python-dotenv
+pandas
+plotly

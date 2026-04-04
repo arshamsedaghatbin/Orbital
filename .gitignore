@@ -1,0 +1,33 @@
+# Environments
+.env
+.env.backup
+venv/
+env/
+.venv/
+ENV/
+
+# Python caching
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Telegram Session Files (Sensitive)
+*.session
+*.session-journal
+phone_code_hash.txt
+
+# Streamlit logs/data
+.streamlit/
+history.json
+channels.json
+
+# Logs
+*.log
+london_bot.log
+
+# Mac OS files
+.DS_Store
+.idea/
+*.iws
+*.iml
+*.ipr
