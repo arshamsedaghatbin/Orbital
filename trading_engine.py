@@ -526,27 +526,3 @@ class TradingEngine:
         except Exception as e:
             print(f"Error in partial_close for {ticket}: {e}")
             return False
-    async def close_all_profitable(self, symbol_filter="GLOBAL"):
-        """
-        Closes all positions with positive floating profit for a given symbol (or all if GLOBAL).
-        """
-        if not self.connection:
-            return 0
-            
-        try:
-            positions = await self.connection.get_positions()
-            count = 0
-            for p in positions:
-                sym = p['symbol']
-                if symbol_filter != "GLOBAL" and sym != symbol_filter:
-                    continue
-                
-                profit = p.get('unrealizedProfit', 0.0)
-                if profit > 0:
-                    print(f"💰 Closing profitable position: {p['id']} ({sym}) with profit {profit}")
-                    await self.connection.close_position(p['id'])
-                    count += 1
-            return count
-        except Exception as e:
-            print(f"Error in close_all_profitable: {e}")
-            return 0

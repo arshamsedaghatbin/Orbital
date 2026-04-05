@@ -77,6 +77,12 @@ Upon first run, the **Onboarding Wizard** will guide you through:
 2. **AI Link**: Mount your Gemini Brain.
 3. **Engine Link**: Connect to your MT5 account.
 
+### 💎 Minimalist Glassmorphism UI
+A high-fidelity, Apple-inspired interface designed for clarity and sophistication.
+- **Glass Effect**: Semi-transparent containers with `16px` backdrop blur and `10%` white borders.
+- **Micro-Interaction Engine**: Sub-second P/L pulse glow indicators, staggered card entrance animations, and dynamic hover states for a premium tactile feel.
+- **Monochromatic Systems**: Clean, single-tone icons and typography to reduce cognitive load during high-volatility sessions.
+
 ---
 
 ## ⚙️ CONFIGURATION

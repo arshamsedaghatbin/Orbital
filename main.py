@@ -121,6 +121,8 @@ class BotState:
         self.tg_me = None
         self.tg_auth_status = None
         
+        self.active_view = "XAUUSD" # Navigation view
+        
         # Per-symbol settings
         default_conf = {
             'risk_usd':       float(os.getenv('RISK_USD', 50)),
@@ -1024,7 +1026,19 @@ def main():
     def on_audio_brief():
         pass  # placeholder
 
-    # dashboard.render_sidebar(on_audio_brief, state)
+    # ── NAVIGATION & SIDEBAR ───
+    # Construct connection status for sidebar
+    connections = {
+        'tg': getattr(state, 'tg_connected', False),
+        'mt5': getattr(state, 'mt5_connected', False)
+    }
+    symbols = list(state.settings.keys())
+    
+    # Update active view based on sidebar selection
+    new_view = dashboard.render_sidebar(state.active_view, connections, symbols)
+    if new_view != state.active_view:
+        state.active_view = new_view
+        st.rerun()
 
     # ── ONBOARDING WIZARD ───
     if state.setup_needed:
@@ -1037,87 +1051,82 @@ def main():
         
         # Fast background check for state transitions
         # We check every 500ms to keep it Snappy, but return if we need to rerun
-        for _ in range(10): # 5 seconds max wait
+        for _ in range(10): # 5 seconds wait
             time.sleep(0.5)
             if state.setup_step != current_step or state.tg_code_requested != was_requested or state.tg_connected != is_connected_before:
                 st.rerun()
         return
 
-    # ── TABBED INTERFACE ──────────────────────────────────────────────────────
-    tabs = st.tabs(["🟡 XAUUSD", "🔵 EURUSD", "⚙️ Profile"])
+    # ── UNIFIED VIEW ──────────────────────────────────────────────────────────
+    symbol_filter = state.active_view
     
-    # Render Profile Tab first if we need (or at the end)
-    with tabs[2]:
+    if symbol_filter == "SETTINGS":
         def on_save_config(new_config):
             state.commands.append({"type": "UPDATE_CONFIG", "data": new_config})
-            st.toast("Configuration received. Core restart pending...", icon="⚙️")
-        
+            st.toast("Settings updated. Rebooting core...", icon="⚙️")
         dashboard.render_profile_tab(state, on_save_config)
-
-    for i, tab_label in enumerate(["XAUUSD", "EURUSD"]):
-        with tabs[i]:
-            symbol_filter = tab_label
-            # Main 2-column layout for the entire tab
-            col_left, col_right = st.columns([1, 3.5])
+    else:
+        # Main 2-column layout for the entire tab
+        col_left, col_right = st.columns([1, 3.5])
             
-            with col_left:
-                def on_clear_history():
-                    state.commands.append({"type": "CLEAR_HISTORY"})
-                def on_clear_logs():
-                    state.commands.append({"type": "CLEAR_LOGS"})
+        with col_left:
+            def on_clear_history():
+                state.commands.append({"type": "CLEAR_HISTORY"})
+            def on_clear_logs():
+                state.commands.append({"type": "CLEAR_LOGS"})
 
-                # History and Logs occupy the primary left column
-                dashboard.render_history(state.history, on_clear_history, symbol_filter=symbol_filter)
-                st.markdown("---")
-                dashboard.render_intelligence_log(state.logs, on_clear_logs, symbol_filter=symbol_filter)
+            # History and Logs occupy the primary left column
+            dashboard.render_history(state.history, on_clear_history, symbol_filter=symbol_filter)
+            st.markdown("---")
+            dashboard.render_intelligence_log(state.logs, on_clear_logs, symbol_filter=symbol_filter)
 
-            with col_right:
-                # Metrics and Config are grouped in the right column
-                m_left, m_right = st.columns([1, 1])
-                with m_left:
-                    try:
-                        dashboard.render_metrics(state.metrics, symbol=symbol_filter)
-                    except Exception as e:
-                        st.error(f"Error rendering metrics for {symbol_filter}: {str(e)}")
-                
-                with m_right:
-                    if symbol_filter in state.settings:
-                        dashboard.render_symbol_settings(symbol_filter, state.settings[symbol_filter])
-                    else:
-                        st.info(f"No settings for {symbol_filter}")
+        with col_right:
+            # Metrics and Config are grouped in the right column
+            m_left, m_right = st.columns([1, 1])
+            with m_left:
+                try:
+                    dashboard.render_metrics(state.metrics, symbol=symbol_filter)
+                except Exception as e:
+                    st.error(f"Error rendering metrics for {symbol_filter}: {str(e)}")
+            
+            with m_right:
+                if symbol_filter in state.settings:
+                    dashboard.render_symbol_settings(symbol_filter, state.settings[symbol_filter])
+                else:
+                    st.info(f"No settings for {symbol_filter}")
 
-                st.markdown("---")
-                
-                # ── Unified Trading Activity (Pending + Active) ─────────────────────
-                def on_drop(queue_id):
-                    state.commands.append({"type": "DROP_QUEUED_TRADE", "queue_id": queue_id})
-                
-                def on_retry(queue_id):
-                    state.commands.append({"type": "FORCE_RETRY_TRADE", "queue_id": queue_id})
+            st.markdown("---")
+            
+            # ── Unified Trading Activity (Pending + Active) ─────────────────────
+            def on_drop(queue_id):
+                state.commands.append({"type": "DROP_QUEUED_TRADE", "queue_id": queue_id})
+            
+            def on_retry(queue_id):
+                state.commands.append({"type": "FORCE_RETRY_TRADE", "queue_id": queue_id})
 
-                def on_close(order_id):
-                    state.commands.append({"type": "CLOSE_TRADE", "id": order_id})
+            def on_close(order_id):
+                state.commands.append({"type": "CLOSE_TRADE", "id": order_id})
 
-                def on_close_profitable(sym):
-                    state.commands.append({"type": "CLOSE_ALL_PROFITABLE", "symbol": sym})
+            def on_close_profitable(sym):
+                state.commands.append({"type": "CLOSE_ALL_PROFITABLE", "symbol": sym})
 
-                dashboard.render_trading_activity(
-                    active_trades=state.active_trades,
-                    pending_queue=state.pending_queue,
-                    state=state,
-                    on_close_callback=on_close,
-                    on_close_profitable_callback=on_close_profitable,
-                    on_drop_callback=on_drop,
-                    on_retry_callback=on_retry,
-                    symbol_filter=symbol_filter
-                )
+            dashboard.render_trading_activity(
+                active_trades=state.active_trades,
+                pending_queue=state.pending_queue,
+                state=state,
+                on_close_callback=on_close,
+                on_close_profitable_callback=on_close_profitable,
+                on_drop_callback=on_drop,
+                on_retry_callback=on_retry,
+                symbol_filter=symbol_filter
+            )
 
-                st.markdown("---")
+            st.markdown("---")
 
-                def on_manual_order(raw_text):
-                    state.commands.append({"type": "PARSE_AND_EXECUTE", "text": raw_text})
+            def on_manual_order(raw_text):
+                state.commands.append({"type": "PARSE_AND_EXECUTE", "text": raw_text})
 
-                dashboard.render_manual_order(on_manual_order, key_suffix=symbol_filter)
+            dashboard.render_manual_order(on_manual_order, key_suffix=symbol_filter)
 
     # Auto-refresh
     time.sleep(2)
