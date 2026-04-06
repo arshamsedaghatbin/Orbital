@@ -34,19 +34,25 @@ class AIBrain:
            - Map these to { "type": "UPDATE", ... }
         3. NOISE: Only use this for greetings ("Hello"), links (https://...), or pure news analysis with no trade numbers.
            - Never mark a message with a symbol and TWO price numbers as NOISE.
-        4. NUMERIC ACCURACY: Extract prices exactly as written.
-        5. IMAGE ANALYSIS: If a chart image is provided:
-           - Look for watermark or header symbols (XAUUSD, GOLD).
-           - Look for horizontal lines: Red/Orange is usually SL. Green/Blue is usually Entry/TP.
-           - Extract SL and Entry from the numeric labels next to these lines.
+        3. NUMERIC ACCURACY: Extract prices exactly as written.
+        4. SIGNAL TYPE INTENT: You must understand the INTENT of the message. 
+           - **CANCEL**: Identification of intent to stop, abort, close, delete, or forget a previous signal. 
+             If the sender wants to 'revoke' or 'ignore' an earlier trade (e.g., "Forget that", "Laghv", "لغو", "Don't do it"), the type MUST be `CANCEL`.
+           - **UPDATE**: Intent to change parameters (Entry/SL/TP) of an existing trade.
+           - **NEW**: Intent to open a fresh trade.
+           - Even if the message includes numbers/prices, if the context is "Close/Delete/Cancel", the type is `CANCEL`.
+        5. IMAGE ANALYSIS: If a chart image is provided, look for symbols and price levels.
         6. DEFAULT SYMBOL: "XAUUSD" if not specified.
-        7. OUTPUT: Return ONLY a JSON object.
+        7. OUTPUT: Return ONLY a JSON object with keys: type ("NEW", "UPDATE", or "CANCEL"), symbol, entry, sl, side, and tp.
+           - For `CANCEL`, entry, sl, and side can be null.
 
         EXAMPLES:
-        "XAUUSD Sellstop Entry 4739.4 Sl 4742.9" -> { "type": "NEW", "symbol": "XAUUSD", "entry": 4739.4, "sl": 4742.9, "side": "SELL" }
-        "Update Xauusd Sellstop Entry 4740 Sl 4742.9" -> { "type": "UPDATE", "symbol": "XAUUSD", "entry": 4740.0, "sl": 4742.9, "side": "SELL" }
-        "Gold Sell 2345 Sl 2355" -> { "type": "NEW", "symbol": "XAUUSD", "entry": 2345.0, "sl": 2355.0, "side": "SELL" }
-        "EURUSD Buy 1.08500 Sl 1.08200" -> { "type": "NEW", "symbol": "EURUSD", "entry": 1.08500, "sl": 1.08200, "side": "BUY" }
+        Text: "XAUUSD Sellstop Entry 4739.4 Sl 4742.9" -> { "type": "NEW", "symbol": "XAUUSD", "entry": 4739.4, "sl": 4742.9, "side": "SELL" }
+        Text: "Update Xauusd Entry 4700 Sl 4600" -> { "type": "UPDATE", "symbol": "XAUUSD", "entry": 4700.0, "sl": 4600.0, "side": "SELL" }
+        Text: "اردر فعال نشد برداشته شود XAUUSD" -> { "type": "CANCEL", "symbol": "XAUUSD", "entry": null, "sl": null, "side": null }
+        Text: "کنسل طلا" -> { "type": "CANCEL", "symbol": "XAUUSD", "entry": null, "sl": null, "side": null }
+        Text: "Cancel EURUSD" -> { "type": "CANCEL", "symbol": "EURUSD", "entry": null, "sl": null, "side": null }
+        Text: "Modify EURUSD SL 1.08200" -> { "type": "UPDATE", "symbol": "EURUSD", "entry": null, "sl": 1.08200, "side": null }
         """
 
         try:
@@ -87,8 +93,8 @@ class AIBrain:
             match = re.search(r"\{.*\}", output, re.DOTALL)
             if match:
                 data = json.loads(match.group(0))
-                # Only return if it's a valid trading action (NEW or UPDATE)
-                if data.get('type') in ['NEW', 'UPDATE']:
+                # Return valid trading actions
+                if data.get('type') in ['NEW', 'UPDATE', 'CANCEL']:
                     return data
                 return None
         except Exception as e:

@@ -83,6 +83,7 @@ class BotState:
         self.logs = []
         self.history = load_history()   # Loaded from disk on startup
         self.seen_ids = set()           # Tracks Telegram message IDs
+        self.boot_time = datetime.now(timezone.utc) # Track when bot started
         
         # Segmented Metrics
         self.metrics = {
@@ -152,6 +153,7 @@ async def bot_worker(state: BotState):
     state.restart_event = asyncio.Event()
 
     state.logs.append({"time": datetime.now().strftime("%H:%M:%S"), "preview": "System Booting...", "type": "BOOT"})
+    state.boot_time = datetime.now(timezone.utc) # Reset boot_time for filtering
 
     # --- Setup Detection ---
     def is_setup_incomplete():
@@ -232,6 +234,21 @@ async def bot_worker(state: BotState):
                 print(f"⏩ Skipping duplicate signal: ID {msg_id}")
             return
         
+        # ── BOOT TIME FILTER ──────────────────────────────────────────────────
+        is_historical = False
+        if msg_date:
+            # Ensure msg_date is offset-aware for comparison if it is, else make it naive
+            # Telethon dates are usually UTC offset-aware
+            if msg_date.tzinfo is None:
+                # If naive, assume it's local or match boot_time's naivety
+                # But best to keep everything offset-aware
+                msg_date = msg_date.replace(tzinfo=timezone.utc)
+            
+            if msg_date < state.boot_time:
+                if not quiet:
+                    print(f"⏳ Ignoring historical signal from {msg_date} (Boot: {state.boot_time})")
+                return
+        
         async with (state.lock if state.lock else asyncio.Lock()):
             if msg_id:
                 state.seen_ids.add(msg_id)
@@ -255,48 +272,54 @@ async def bot_worker(state: BotState):
             })
             return
 
+        if is_historical:
+            state.logs.append({
+                "time": datetime.now().strftime("%H:%M:%S"),
+                "type": "SYSTEM",
+                "preview": f"[{source}] Historical signal logged but NOT executed (sent before boot)."
+            })
+            return
+
         sym    = signal_data.get('symbol', 'XAUUSD')
         sig_type = signal_data.get('type', 'NEW').upper()
 
         if sig_type == 'UPDATE':
-            # ── UPDATE: modify the last open position for this symbol ──────
-            state.logs.append({
-                "time": datetime.now().strftime("%H:%M:%S"),
-                "type": "SIGNAL",
-                "preview": f"[{source}] 🔄 UPDATE {sym} → entry:{signal_data['entry']} SL:{signal_data['sl']}"
-            })
-            entry['updated'] = True
-            save_history(state.history)
-
+            # ── UPDATE: first check pending queue, then fallback to live positions ──
             found_in_queue = False
             async with (state.lock if state.lock else asyncio.Lock()):
-                # 1. Check pending queue first (local state)
                 for q_item in state.pending_queue:
                     if q_item['symbol'] == sym:
-                        q_item['data']['entry'] = signal_data['entry']
-                        q_item['data']['sl'] = signal_data['sl']
+                        q_item['data']['entry'] = float(signal_data.get('entry', q_item['data']['entry']))
+                        q_item['data']['sl'] = float(signal_data.get('sl', q_item['data']['sl']))
+                        q_item['retries'] = 0 # Priority retry
                         found_in_queue = True
                         break
-
+            
             if found_in_queue:
                 state.logs.append({
                     "time": datetime.now().strftime("%H:%M:%S"),
                     "type": "SIGNAL",
-                    "preview": f"✅ [{source}] Local Pending Trade updated for {sym}"
+                    "preview": f"✅ [{source}] Updated PENDING {sym} in queue."
                 })
-                entry['order_id'] = "QUEUED_UPDATE"
+                entry['order_id'] = "QUEUED_UPD" # Marker for UI
                 save_history(state.history)
                 return
 
-            # 2. Check broker positions/orders
-            # Use symbol-specific settings
-            sym_settings = state.settings.get(sym, state.settings["GLOBAL"])
+            # Fallback to live trades on MT5
+            state.logs.append({
+                "time": datetime.now().strftime("%H:%M:%S"),
+                "type": "SIGNAL",
+                "preview": f"[{source}] 🔄 UPDATE {sym} (MT5) → entry:{signal_data['entry']} SL:{signal_data['sl']}"
+            })
+            entry['updated'] = True
+            save_history(state.history)
+
             if engine:
                 order_id = await engine.modify_last_trade(
                     sym,
                     float(signal_data['entry']),
                     float(signal_data['sl']),
-                    sym_settings
+                    state.settings.get(sym, state.settings["GLOBAL"])
                 )
                 if order_id:
                     state.logs.append({
@@ -312,7 +335,56 @@ async def bot_worker(state: BotState):
                         "type": "NOISE",
                         "preview": f"❌ [{source}] Update failed — no active position or queued trade for {sym}"
                     })
-                    entry['error'] = "NOT_FOUND" # So dashboard knows it's not 'filtered'
+                    entry['error'] = "UPDATE_FAILED"
+                    save_history(state.history)
+
+        elif sig_type == 'CANCEL':
+            # ── CANCEL: first check pending queue, then MT5 ──
+            found_in_queue = False
+            async with (state.lock if state.lock else asyncio.Lock()):
+                new_queue = []
+                for q_item in state.pending_queue:
+                    if q_item['symbol'] == sym:
+                        found_in_queue = True
+                        continue
+                    new_queue.append(q_item)
+                state.pending_queue = new_queue
+
+            if found_in_queue:
+                state.logs.append({
+                    "time": datetime.now().strftime("%H:%M:%S"),
+                    "type": "SIGNAL",
+                    "preview": f"✅ [{source}] Removed {sym} from Pending Queue."
+                })
+                entry['order_id'] = "QUEUED_CAN"
+                save_history(state.history)
+                return
+
+            # Fallback to MT5
+            state.logs.append({
+                "time": datetime.now().strftime("%H:%M:%S"),
+                "type": "SIGNAL",
+                "preview": f"[{source}] 🗑 Requesting CANCEL for {sym} (MT5)"
+            })
+
+            if engine:
+                ticket_id = await engine.cancel_last_trade(sym)
+                if ticket_id:
+                    state.logs.append({
+                        "time": datetime.now().strftime("%H:%M:%S"),
+                        "type": "SIGNAL",
+                        "preview": f"✅ [{source}] MT5 Order/Position Cancelled: {ticket_id}"
+                    })
+                    entry['order_id'] = f"CAN_{ticket_id}"
+                    save_history(state.history)
+                else:
+                    state.logs.append({
+                        "time": datetime.now().strftime("%H:%M:%S"),
+                        "type": "NOISE",
+                        "preview": f"❌ [{source}] Cancel failed — no active {sym} found."
+                    })
+                    entry['error'] = "CANCEL_FAILED"
+                    save_history(state.history)
 
         else:
             # ── NEW: open a fresh trade ───────────────────────────────────
@@ -473,6 +545,26 @@ async def bot_worker(state: BotState):
                             "preview": f"{'✅' if success else '❌'} Trade closed: {cmd['id']}"
                         })
 
+                    elif cmd['type'] == 'SET_BE':
+                        if not engine: continue
+                        print(f"💰 Command: SET_BE for {cmd['id']}")
+                        success = await engine.set_be(cmd['id'])
+                        state.logs.append({
+                            "time": datetime.now().strftime("%H:%M:%S"),
+                            "type": "SYSTEM",
+                            "preview": f"{'✅' if success else '❌'} BE set for {cmd['id']}"
+                        })
+
+                    elif cmd['type'] == 'RESTORE_SL':
+                        if not engine: continue
+                        print(f"💰 Command: RESTORE_SL for {cmd['id']}")
+                        success = await engine.restore_sl(cmd['id'])
+                        state.logs.append({
+                            "time": datetime.now().strftime("%H:%M:%S"),
+                            "type": "SYSTEM",
+                            "preview": f"{'✅' if success else '❌'} SL restored for {cmd['id']}"
+                        })
+
                     elif cmd['type'] == 'TRAIL_SL':
                         if not engine: continue
                         print(f"💰 Command: TRAIL_SL to {cmd['sl']} for {cmd['id']}")
@@ -480,7 +572,7 @@ async def bot_worker(state: BotState):
                         state.logs.append({
                             "time": datetime.now().strftime("%H:%M:%S"),
                             "type": "SYSTEM",
-                            "preview": f"{'✅' if success else '❌'} SL restored for {cmd['id']}"
+                            "preview": f"{'✅' if success else '❌'} SL adjusted to {cmd['sl']} for {cmd['id']}"
                         })
 
                     elif cmd['type'] == 'PARTIAL_CLOSE':
@@ -830,7 +922,7 @@ async def bot_worker(state: BotState):
                             image_bytes = await raw.download_media(file=bytes)
                         except: pass
                     # Quiet sync: don't spam 'skipping duplicate' logs every minute
-                    await process_signal(msg['text'], source="Telegram (Sync)", msg_id=msg['id'], quiet=True, image_bytes=image_bytes, msg_date=msg['date'])
+                    await process_signal(msg['text'], source="Telegram (Sync)", msg_id=msg['id'], quiet=True, image_bytes=image_bytes, msg_date=msg.get('date'))
             except Exception as e:
                 print(f"Sync Loop Error: {e}")
 
@@ -863,10 +955,8 @@ async def bot_worker(state: BotState):
             state.tg_connected = True
             state.logs.append({"time": datetime.now().strftime("%H:%M:%S"), "preview": "✅ Telegram Connection Established.", "type": "SYSTEM"})
 
-            # 2. ── SKIP Initial Boot Sync ─────────────────
-            # User requested: only process signals from the moment bot starts.
-            # We skip the check_for_missed_signals block.
-            print("📡 Bot started. Real-time monitoring active (Skipping history).")
+            # 2. Real-time monitoring only — boot_time filter skips history
+            print("📡 Bot started. Real-time monitoring active (boot_time filter active).")
             
             # 3. Resolve metadata mapping for display
             print("📡 Updating channel names map...")

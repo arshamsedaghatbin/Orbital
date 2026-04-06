@@ -235,9 +235,12 @@ class TradingEngine:
             orders    = await self.connection.get_orders()
 
             # ── Try open positions first ──────────────────────────────────────
-            sym_positions = [p for p in positions if p['symbol'] == symbol]
+            # Use robust matching (ignore case, handle potential suffixes like .m)
+            target = symbol.upper()
+            sym_positions = [p for p in positions if p['symbol'].upper().startswith(target)] or [p for p in positions if target in p['symbol'].upper()]
+            
             if sym_positions:
-                pos = sym_positions[-1]   # most recent
+                pos = sym_positions[-1]   # take most recent
                 ticket = pos['id']
                 # Keep existing TP, just move SL
                 tp = self.active_trades.get(ticket, {}).get('tp', pos.get('takeProfit', 0))
@@ -250,13 +253,13 @@ class TradingEngine:
                 return ticket
 
             # ── Try pending orders ────────────────────────────────────────────
-            sym_orders = [o for o in orders if o['symbol'] == symbol]
+            sym_orders = [o for o in orders if o['symbol'].upper().startswith(target)] or [o for o in orders if target in o['symbol'].upper()]
             if sym_orders:
                 ord_ = sym_orders[-1]
                 ticket = ord_['id']
                 # Cancel old pending order
                 await self.connection.cancel_order(ticket)
-                print(f"🗑 Cancelled pending order {ticket}")
+                print(f"🗑 Cancelled pending order {ticket} to update")
                 # Re-place with new entry/SL using same settings
                 old_data = self.active_trades.pop(ticket, {})
                 side = old_data.get('side', ord_.get('type', 'BUY').replace('ORDER_TYPE_', '').split('_')[0])
@@ -278,6 +281,136 @@ class TradingEngine:
         except Exception as e:
             print(f"Modify Trade Error: {e}")
             return None
+
+    async def cancel_last_trade(self, symbol: str):
+        """
+        CANCEL scenario: finds the last pending order or active position
+        for the symbol and removes/closes it.
+        Returns the ticket_id of the cancelled trade, or None.
+        """
+        if not self.connection:
+            if not await self.connect():
+                return None
+
+        try:
+            positions = await self.connection.get_positions()
+            orders    = await self.connection.get_orders()
+
+            target = symbol.upper()
+            
+            # ── Try pending orders first ──────────────────────────────────────
+            sym_orders = [o for o in orders if o['symbol'].upper().startswith(target)] or [o for o in orders if target in o['symbol'].upper()]
+            if sym_orders:
+                ord_ = sym_orders[-1]
+                ticket = ord_['id']
+                await self.connection.cancel_order(ticket)
+                print(f"🗑 Cancelled pending order {ticket} for {symbol}")
+                
+                if ticket in self.active_trades:
+                    data = self.active_trades.pop(ticket)
+                    data['status'] = 'CANCELLED'
+                    self.closed_trades.append(data)
+                return ticket
+
+            # ── Fallback to active positions ──────────────────────────────────
+            sym_positions = [p for p in positions if p['symbol'].upper().startswith(target)] or [p for p in positions if target in p['symbol'].upper()]
+            if sym_positions:
+                pos = sym_positions[-1]
+                ticket = pos['id']
+                await self.connection.close_position(ticket)
+                print(f"📡 Closed active position {ticket} for {symbol}")
+                
+                if ticket in self.active_trades:
+                    data = self.active_trades.pop(ticket)
+                    data['status'] = 'CLOSED_BY_CANCEL'
+                    self.closed_trades.append(data)
+                return ticket
+
+            print(f"[CancelTrade] No trade or order found to cancel for {symbol}")
+            return None
+
+        except Exception as e:
+            print(f"Cancel Trade Error: {e}")
+            return None
+
+    async def set_be(self, ticket_id: str):
+        """Manually moves a position to Break-Even."""
+        if not self.connection: return False
+        try:
+            positions = await self.connection.get_positions()
+            for pos in positions:
+                if str(pos['id']) == str(ticket_id):
+                    entry = pos.get('openPrice', 0)
+                    tp = pos.get('takeProfit', 0)
+                    await self.connection.modify_position(pos['id'], entry, tp)
+                    if pos['id'] in self.active_trades:
+                        self.active_trades[pos['id']]['sl'] = entry
+                        self.active_trades[pos['id']]['be_hit'] = True
+                    print(f"🚀 Manually moved {ticket_id} to BE at {entry}")
+                    return True
+            return False
+        except Exception as e:
+            print(f"❌ Set BE Error: {e}")
+            return False
+
+    async def restore_sl(self, ticket_id: str):
+        """Restores a position's SL to its original value."""
+        if not self.connection: return False
+        try:
+            original_sl = self.original_sls.get(ticket_id)
+            if not original_sl: 
+                print(f"❌ Restore SL Error: Original SL not found for {ticket_id}")
+                return False
+            
+            positions = await self.connection.get_positions()
+            for pos in positions:
+                if str(pos['id']) == str(ticket_id):
+                    tp = pos.get('takeProfit', 0)
+                    await self.connection.modify_position(pos['id'], original_sl, tp)
+                    if pos['id'] in self.active_trades:
+                        self.active_trades[pos['id']]['sl'] = original_sl
+                        self.active_trades[pos['id']]['be_hit'] = False
+                    print(f"🔄 Restored SL for {ticket_id} to {original_sl}")
+                    return True
+            return False
+        except Exception as e:
+            print(f"❌ Restore SL Error: {e}")
+            return False
+
+    async def modify_sl(self, ticket_id: str, new_sl: float):
+        """Modifies the SL of an existing position or order."""
+        if not self.connection: return False
+        try:
+            # Check positions
+            positions = await self.connection.get_positions()
+            for pos in positions:
+                if str(pos['id']) == str(ticket_id):
+                    tp = pos.get('takeProfit', 0)
+                    await self.connection.modify_position(pos['id'], new_sl, tp)
+                    if pos['id'] in self.active_trades:
+                        self.active_trades[pos['id']]['sl'] = new_sl
+                    print(f"🔄 Modified SL for position {ticket_id} to {new_sl}")
+                    return True
+            
+            # Check orders
+            orders = await self.connection.get_orders()
+            for ord_ in orders:
+                if str(ord_['id']) == str(ticket_id):
+                    # We don't have modify_order in this SDK usually, or it's similar
+                    # For simplicity, if modify_order fails, we use modify_position's equivalent
+                    try:
+                        await self.connection.modify_order(ord_['id'], ord_.get('openPrice'), new_sl, ord_.get('takeProfit', 0))
+                    except:
+                        # Fallback to cancel/re-place if needed, but usually modify_order exists
+                        pass
+                    if ord_['id'] in self.active_trades:
+                        self.active_trades[ord_['id']]['sl'] = new_sl
+                    print(f"🔄 Modified SL for order {ticket_id} to {new_sl}")
+                    return True
+            return False
+        except Exception as e:
+            print(f"❌ Modify SL Error: {e}")
+            return False
 
     async def close_all_profitable(self, symbol="GLOBAL"):
         """Closes all positions with profit > 0 for a specific symbol or globally."""

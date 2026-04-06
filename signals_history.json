@@ -1,0 +1,261 @@
+[
+  {
+    "msg_id": 4699,
+    "text": "Xauusd\n\nSellstop\n\nEntry 4701.8\n\nSl 4705.9",
+    "date": "2026-04-06 10:31:27",
+    "source": "Telegram (Sync)",
+    "signal": {
+      "type": "NEW",
+      "symbol": "XAUUSD",
+      "entry": 4701.8,
+      "sl": 4705.9,
+      "side": "SELL",
+      "tp": null
+    },
+    "order_id": "1217801568"
+  },
+  {
+    "msg_id": 96,
+    "text": "Cancle the order",
+    "date": "2026-04-05 11:58:32",
+    "source": "Telegram",
+    "signal": {
+      "type": "CANCEL",
+      "symbol": "XAUUSD",
+      "entry": null,
+      "sl": null,
+      "side": null,
+      "tp": null
+    },
+    "order_id": "QUEUED_CAN"
+  },
+  {
+    "msg_id": 95,
+    "text": "Update \nXauusd\n\nSellstop \n\nEntry 4750\n\nSl 4600",
+    "date": "2026-04-05 11:57:57",
+    "source": "Telegram",
+    "signal": {
+      "type": "UPDATE",
+      "symbol": "XAUUSD",
+      "entry": 4750.0,
+      "sl": 4600.0,
+      "side": "SELL",
+      "tp": null
+    },
+    "order_id": "QUEUED_UPD"
+  },
+  {
+    "msg_id": 94,
+    "text": "Update \nXauusd\n\nSellstop \n\nEntry 4700\n\nSl 4600",
+    "date": "2026-04-05 11:57:43",
+    "source": "Telegram",
+    "signal": {
+      "type": "UPDATE",
+      "symbol": "XAUUSD",
+      "entry": 4700.0,
+      "sl": 4600.0,
+      "side": "SELL",
+      "tp": null
+    },
+    "order_id": "QUEUED_UPD"
+  },
+  {
+    "msg_id": 93,
+    "text": "Xauusd\n\nSellstop \n\nEntry 4739.4\n\nSl 4742.9",
+    "date": "2026-04-05 11:57:29",
+    "source": "Telegram",
+    "signal": {
+      "type": "NEW",
+      "symbol": "XAUUSD",
+      "entry": 4750.0,
+      "sl": 4600.0,
+      "side": "SELL",
+      "tp": null
+    },
+    "queued": true,
+    "error": "PRICE_ERROR"
+  },
+  {
+    "msg_id": 92,
+    "text": "\u0627\u0648\u0631\u062f \u0628\u0631\u062f\u0627\u0634\u062a\u0647 \u0634\u0648\u062f",
+    "date": "2026-04-05 11:57:09",
+    "source": "Telegram",
+    "signal": {
+      "type": "CANCEL",
+      "symbol": "XAUUSD",
+      "entry": null,
+      "sl": null,
+      "side": null,
+      "tp": null
+    },
+    "order_id": "QUEUED_CAN"
+  },
+  {
+    "msg_id": 91,
+    "text": "Update \nXauusd\n\nSellstop \n\nEntry 4700\n\nSl 4600",
+    "date": "2026-04-05 11:56:56",
+    "source": "Telegram",
+    "signal": {
+      "type": "UPDATE",
+      "symbol": "XAUUSD",
+      "entry": 4700.0,
+      "sl": 4600.0,
+      "side": "SELL",
+      "tp": null
+    },
+    "order_id": "QUEUED_UPD"
+  },
+  {
+    "msg_id": 90,
+    "text": "Xauusd\n\nSellstop \n\nEntry 4739.4\n\nSl 4742.9",
+    "date": "2026-04-05 11:56:43",
+    "source": "Telegram",
+    "signal": {
+      "type": "NEW",
+      "symbol": "XAUUSD",
+      "entry": 4700.0,
+      "sl": 4600.0,
+      "side": "SELL",
+      "tp": null
+    },
+    "queued": true,
+    "error": "PRICE_ERROR"
+  },
+  {
+    "msg_id": 89,
+    "text": "\u0627\u0648\u0631\u062f\u0631 \u0641\u0639\u0627\u0644 \u0646\u0634\u062f \u0628\u0631\u062f\u0627\u0634\u062a\u0647 \u0634\u0648\u062f",
+    "date": "2026-04-05 11:51:51",
+    "source": "Telegram",
+    "signal": null
+  },
+  {
+    "msg_id": 88,
+    "text": "\u0627\u0648\u0631\u062f\u0631 \u06a9\u0646\u0633\u0644\u200c\u0634\u0648\u062f",
+    "date": "2026-04-05 11:51:26",
+    "source": "Telegram",
+    "signal": null
+  },
+  {
+    "msg_id": 87,
+    "text": "Update \nXauusd\n\nSellstop \n\nEntry 4700\n\nSl 4600",
+    "date": "2026-04-05 11:51:15",
+    "source": "Telegram",
+    "signal": {
+      "type": "UPDATE",
+      "symbol": "XAUUSD",
+      "entry": 4700.0,
+      "sl": 4600.0,
+      "side": "SELL",
+      "tp": null
+    },
+    "order_id": "QUEUED_UPD"
+  },
+  {
+    "msg_id": 86,
+    "text": "Xauusd\n\nSellstop \n\nEntry 4739.4\n\nSl 4742.9",
+    "date": "2026-04-05 11:50:59",
+    "source": "Telegram",
+    "signal": {
+      "type": "NEW",
+      "symbol": "XAUUSD",
+      "entry": 4700.0,
+      "sl": 4600.0,
+      "side": "SELL",
+      "tp": null
+    },
+    "queued": true,
+    "error": "PRICE_ERROR"
+  },
+  {
+    "msg_id": 85,
+    "text": "Update \nXauusd\n\nSellstop \n\nEntry 4700\n\nSl 4600",
+    "date": "2026-04-05 11:38:43",
+    "source": "Telegram",
+    "signal": {
+      "type": "UPDATE",
+      "symbol": "XAUUSD",
+      "entry": 4700.0,
+      "sl": 4600.0,
+      "side": "SELL",
+      "tp": null
+    },
+    "order_id": "QUEUED_UPD"
+  },
+  {
+    "msg_id": 84,
+    "text": "Xauusd\n\nSellstop \n\nEntry 4739.4\n\nSl 4742.9",
+    "date": "2026-04-05 11:38:33",
+    "source": "Telegram",
+    "signal": {
+      "type": "NEW",
+      "symbol": "XAUUSD",
+      "entry": 4700.0,
+      "sl": 4600.0,
+      "side": "SELL",
+      "tp": null
+    },
+    "queued": true,
+    "error": "PRICE_ERROR"
+  },
+  {
+    "msg_id": 83,
+    "text": "Update \nXauusd\n\nSellstop \n\nEntry 4700\n\nSl 4600",
+    "date": "2026-04-05 11:29:21",
+    "source": "Telegram",
+    "signal": {
+      "type": "UPDATE",
+      "symbol": "XAUUSD",
+      "entry": 4700.0,
+      "sl": 4600.0,
+      "side": "SELL",
+      "tp": null
+    },
+    "updated": true
+  },
+  {
+    "msg_id": 82,
+    "text": "Xauusd\n\nSellstop \n\nEntry 4739.4\n\nSl 4742.9",
+    "date": "2026-04-05 11:29:10",
+    "source": "Telegram",
+    "signal": {
+      "type": "NEW",
+      "symbol": "XAUUSD",
+      "entry": 4739.4,
+      "sl": 4742.9,
+      "side": "SELL",
+      "tp": null
+    },
+    "queued": true,
+    "error": "PRICE_ERROR"
+  },
+  {
+    "msg_id": 81,
+    "text": "Update \nXauusd\n\nSellstop \n\nEntry 4700\n\nSl 4600",
+    "date": "2026-04-05 10:39:13",
+    "source": "Telegram",
+    "signal": {
+      "type": "NEW",
+      "symbol": "XAUUSD",
+      "entry": 4700.0,
+      "sl": 4600.0,
+      "side": "SELL"
+    },
+    "queued": true,
+    "error": "PRICE_ERROR"
+  },
+  {
+    "msg_id": 80,
+    "text": "Xauusd\n\nSellstop \n\nEntry 4739.4\n\nSl 4742.9",
+    "date": "2026-04-05 10:38:59",
+    "source": "Telegram",
+    "signal": {
+      "type": "NEW",
+      "symbol": "XAUUSD",
+      "entry": 4739.4,
+      "sl": 4742.9,
+      "side": "SELL"
+    },
+    "queued": true,
+    "error": "PRICE_ERROR"
+  }
+]
