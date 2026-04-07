@@ -22,6 +22,17 @@ history.json
 signals_history.json
 channels.json
 
+# Trade Data & State
+active_trades_metadata.json
+bot_owned_tickets.json
+ignored_tickets.json
+pending_queue.json
+signals_history.json
+
+# Caches & Dumps
+vector_cache.json
+history_dump.txt
+
 # Logs
 *.log
 london_bot.log
