@@ -21,6 +21,7 @@ load_dotenv()
 
 HISTORY_FILE = os.path.join(os.path.dirname(__file__), "signals_history.json")
 PENDING_QUEUE_FILE = os.path.join(os.path.dirname(__file__), "pending_queue.json")
+SETTINGS_FILE = os.path.join(os.path.dirname(__file__), "settings.json")
 
 
 def save_history(history: list):
@@ -42,6 +43,27 @@ def load_history() -> list:
     except Exception as e:
         print(f"[Storage] Load error: {e}")
         return []
+
+
+def save_settings(settings: dict):
+    """Persist system settings to disk."""
+    try:
+        with open(SETTINGS_FILE, "w") as f:
+            json.dump(settings, f, indent=2)
+    except Exception as e:
+        print(f"[Storage] Settings save error: {e}")
+
+
+def load_settings() -> dict:
+    """Load persisted system settings."""
+    if not os.path.exists(SETTINGS_FILE):
+        return None
+    try:
+        with open(SETTINGS_FILE, "r") as f:
+            return json.load(f)
+    except Exception as e:
+        print(f"[Storage] Settings load error: {e}")
+        return None
 
 
 def save_pending_queue(queue: list):
@@ -160,6 +182,17 @@ class BotState:
             "EURUSD": {**default_conf, 'risk_usd': 25, 'rr_target': 4}
         }
 
+        # Load persisted settings if they exist
+        saved = load_settings()
+        if saved:
+            for symbol, conf in saved.items():
+                if symbol in self.settings:
+                    self.settings[symbol].update(conf)
+
+    def save_settings(self):
+        """Helper to trigger settings save."""
+        save_settings(self.settings)
+
 
 @st.cache_resource
 def get_bot_state_v3():
@@ -247,7 +280,7 @@ async def bot_worker(state: BotState):
             state.logs.append({"time": datetime.now().strftime("%H:%M:%S"), "preview": f"⚠️ Vector Index unavailable: {ve}", "type": "ERROR"})
 
     # ── Helpers ────────────────────────────────────────────────────────────────
-    async def process_signal(raw_text: str, source: str, msg_id: int = None, quiet: bool = False, image_bytes: bytes = None, msg_date: datetime = None):
+    async def process_signal(raw_text: str, source: str, msg_id: int = None, quiet: bool = False, image_bytes: bytes = None, msg_date: datetime = None, reply_to_id: int = None):
         """Parse text with AI, auto-execute if signal, persist to disk."""
         if not ai:
             print("⚠️ AI not initialized yet.")
@@ -278,7 +311,42 @@ async def bot_worker(state: BotState):
             if msg_id:
                 state.seen_ids.add(msg_id)
 
-        signal_data = await ai.filter_signal(raw_text, image_bytes=image_bytes)
+        # ── CONTEXT RESOLUTION ─────────────────────────────────────────────
+        parent_context = None
+        if reply_to_id:
+            # 1. Explicit Reply (highest priority)
+            parent = next((h for h in state.history if h.get('msg_id') == reply_to_id), None)
+            if parent:
+                parent_context = {
+                    "text": parent.get('text'),
+                    "symbol": (parent.get('signal') or {}).get('symbol')
+                }
+                if not quiet:
+                    print(f"🔗 [Context] Found explicit parent signal {reply_to_id}: {parent_context['symbol']}")
+        
+        if not parent_context:
+            # 2. Implicit Context: Most recent pending/active trade
+            # Check pending queue first (most likely destination for recent 'cancel' or 'update')
+            if state.pending_queue:
+                last_p = state.pending_queue[-1]
+                parent_context = {
+                    "text": "[Implicit Context from Pending Queue]",
+                    "symbol": last_p.get('symbol', 'XAUUSD')
+                }
+                if not quiet:
+                    print(f"🧠 [Context] Implicit from Pending Queue -> {parent_context['symbol']}")
+            
+            # 3. Last Active trade
+            elif getattr(state, 'active_trades', []):
+                last_t = state.active_trades[0] # most recent from synced trades
+                parent_context = {
+                    "text": "[Implicit Context from Active Trade]",
+                    "symbol": last_t.get('symbol', 'XAUUSD')
+                }
+                if not quiet:
+                    print(f"🧠 [Context] Implicit from Active Trade -> {parent_context['symbol']}")
+
+        signal_data = await ai.filter_signal(raw_text, image_bytes=image_bytes, parent_context=parent_context)
         entry = {
             "msg_id": msg_id,
             "text":   raw_text,
@@ -642,7 +710,7 @@ async def bot_worker(state: BotState):
             error = None
             
             if engine:
-                resp = await engine.execute_trade(signal_data, sym_settings, source=clean_source)
+                resp = await engine.execute_trade(signal_data, sym_settings, source=clean_source, fallback_to_market=True)
                 order_id = resp.get('id')
                 error = resp.get('error')
             else:
@@ -708,7 +776,7 @@ async def bot_worker(state: BotState):
                         # Direct execute (from history "Set as Order")
                         sym = cmd['data'].get('symbol', 'XAUUSD')
                         sym_settings = state.settings.get(sym, state.settings["GLOBAL"])
-                        resp = await engine.execute_trade(cmd['data'], sym_settings, source="MANUAL")
+                        resp = await engine.execute_trade(cmd['data'], sym_settings, source="MANUAL", fallback_to_market=True)
                         order_id = resp.get('id')
                         error = resp.get('error')
 
@@ -767,7 +835,7 @@ async def bot_worker(state: BotState):
                              })
                             sym = item['symbol']
                             sym_settings = state.settings.get(sym, state.settings["GLOBAL"])
-                            resp = await engine.execute_trade(item['data'], sym_settings)
+                            resp = await engine.execute_trade(item['data'], sym_settings, fallback_to_market=True)
                             if resp.get('id'):
                                 state.logs.append({
                                     "time": datetime.now().strftime("%H:%M:%S"),
@@ -1170,7 +1238,7 @@ async def bot_worker(state: BotState):
                 sym_settings = state.settings.get(sym, state.settings["GLOBAL"])
                 
                 try:
-                    resp = await engine.execute_trade(item['data'], sym_settings, source=orig_source)
+                    resp = await engine.execute_trade(item['data'], sym_settings, source=orig_source, fallback_to_market=True)
                     
                     if resp.get('id'):
                         state.logs.append({
@@ -1213,7 +1281,10 @@ async def bot_worker(state: BotState):
             except Exception as e:
                 print(f"❌ Media download error: {e}")
         
-        await process_signal(message.text or "", source="Telegram", msg_id=message.id, image_bytes=image_bytes, msg_date=message.date)
+        # Extract reply information
+        reply_to_id = message.reply_to_msg_id if hasattr(message, 'reply_to_msg_id') else None
+        
+        await process_signal(message.text or "", source="Telegram", msg_id=message.id, image_bytes=image_bytes, msg_date=message.date, reply_to_id=reply_to_id)
 
     # ── High-Frequency Sync Loop ───────────────────────────────────────────────
     async def sync_messages_loop():
@@ -1234,7 +1305,8 @@ async def bot_worker(state: BotState):
                             image_bytes = await raw.download_media(file=bytes)
                         except: pass
                     # Quiet sync: don't spam 'skipping duplicate' logs every minute
-                    await process_signal(msg['text'], source="Telegram (Sync)", msg_id=msg['id'], quiet=True, image_bytes=image_bytes, msg_date=msg.get('date'))
+                    reply_to_id = raw.reply_to_msg_id if raw and hasattr(raw, 'reply_to_msg_id') else None
+                    await process_signal(msg['text'], source="Telegram (Sync)", msg_id=msg['id'], quiet=True, image_bytes=image_bytes, msg_date=msg.get('date'), reply_to_id=reply_to_id)
             except Exception as e:
                 print(f"Sync Loop Error: {e}")
 
@@ -1287,7 +1359,8 @@ async def bot_worker(state: BotState):
                         try: image_bytes = await raw.download_media(file=bytes)
                         except: pass
                     # process_signal with msg_date filter will handle this perfectly.
-                    await process_signal(msg['text'], source="Telegram (Sync)", msg_id=msg_id, quiet=True, image_bytes=image_bytes, msg_date=msg.get('date'))
+                    reply_to_id = raw.reply_to_msg_id if raw and hasattr(raw, 'reply_to_msg_id') else None
+                    await process_signal(msg['text'], source="Telegram (Sync)", msg_id=msg_id, quiet=True, image_bytes=image_bytes, msg_date=msg.get('date'), reply_to_id=reply_to_id)
             
             # 3. Resolve metadata mapping for display
             print("📡 Updating channel names map...")
@@ -1460,7 +1533,7 @@ def fragment_symbol_dashboard(state, dashboard, symbol_filter):
                 st.error(f"Metrics Error ({symbol_filter}): {e}")
         with m_right:
             if symbol_filter in state.settings:
-                dashboard.render_symbol_settings(symbol_filter, state.settings[symbol_filter])
+                dashboard.render_symbol_settings(symbol_filter, state.settings[symbol_filter], state)
         
         st.markdown("---")
         

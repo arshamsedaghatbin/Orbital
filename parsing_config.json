@@ -38,7 +38,8 @@
     "cancelled",
     "close order",
     "remove order",
-    "order invalid"
+    "order invalid",
+    "برداشته شود"
   ],
   "tp_hit_keywords": [
     "test"

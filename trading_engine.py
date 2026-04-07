@@ -352,22 +352,50 @@ class TradingEngine:
             risk_usd = risk_usd / 2.0
             print(f"⚠️ HIGH RISK signal — using half risk: ${risk_usd:.2f}")
 
+        distance = abs(entry - sl)
+        if distance == 0: return {"id": None, "error": "INVALID_STOPS"}
+
         # --- Lot Calculation ---
         try:
-            symbol_info = await self.connection.get_symbol(symbol)
+            symbol_info = await self.connection.get_symbol_specification(symbol)
             contract_size = symbol_info.get('contractSize', 100)
             pip_value_per_lot = contract_size 
-        except:
+            
+            # Use advanced tick-based calculation if available
+            tick_size = symbol_info.get('tickSize')
+            tick_value = symbol_info.get('tickValue')
+            lot_step = symbol_info.get('lotStep', 0.01)
+            min_lot = symbol_info.get('minLot', 0.01)
+            
+            if tick_size and tick_value:
+                # Lot = Risk / ((Distance / TickSize) * TickValue)
+                calculated_lot = risk_usd / ((distance / tick_size) * tick_value)
+                print(f"💰 [Engine] Advanced Lot Calculation for {symbol}: {risk_usd} / (({distance} / {tick_size}) * {tick_value}) = {calculated_lot:.4f}")
+            else:
+                calculated_lot = risk_usd / (distance * pip_value_per_lot)
+                print(f"💰 [Engine] Basic Lot Calculation for {symbol}: {risk_usd} / ({distance} * {pip_value_per_lot}) = {calculated_lot:.4f}")
+
+        except Exception as e:
+            print(f"⚠️ [Engine] Could not get full symbol info for {symbol}: {e}. Using fallbacks.")
             if 'XAU' in symbol:
                 pip_value_per_lot = 100.0
             else:
                 pip_value_per_lot = 100000.0 # Standard Forex lot
+            
+            calculated_lot = risk_usd / (distance * pip_value_per_lot)
+            lot_step = 0.01
+            min_lot = 0.01
 
-        distance = abs(entry - sl)
-        if distance == 0: return None
+        # Round to nearest valid lot step
+        lot = round(round(calculated_lot / lot_step) * lot_step, 2)
+        
+        # Apply Constraints: Floor 0.01 (or minLot) and Ceiling (Safety Cap)
+        lot = max(min_lot, min(lot, 50.0)) 
+        
+        # Final safety check for 0 lot
+        if lot < min_lot: lot = min_lot
 
-        lot = round(risk_usd / (distance * pip_value_per_lot), 2)
-        lot = max(0.01, min(lot, 2.0))  # Capped at 2.0 for safety
+        print(f"📊 [Engine] Final decision for {symbol}: {lot} Lots — Intended Risk: ${risk_usd:.2f} (Dist: {distance:.5f})")
 
         # Ensure TP is rounded to valid tick size if possible
         tp = round(entry + (distance * rr_target) if is_buy_side else entry - (distance * rr_target), 5)

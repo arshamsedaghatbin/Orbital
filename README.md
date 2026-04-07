@@ -30,7 +30,8 @@ Real-time message ingestion via the **Telegram MTProto API**.
 ### 📊 MetaAPI Execution Engine
 The high-speed bridge to MT5 via [MetaAPI](https://metaapi.cloud/).
 - **Asynchronous Execution**: Orders placed with millisecond precision.
-- **Smart Connection Resilience**: Implements an error-thresholding heartbeat. The system maintains "Connected" status during minor network jitter, only marking disconnection after 3 consecutive failures.
+- **Advanced Lot Precision**: Uses real-time broker `tickSize` and `tickValue` data for exact USD risk matching, outperforming standard lot-based calculations.
+- **Market Price Fallback**: Automatically executes at the best available market price if a signal's entry price has already been surpassed, preventing missed trades.
 - **Persistent Signal Queue**: Innovative "Zero-Drop" logic for market errors. Signals blocked by `PRICE_ERROR`, `MARKET_CLOSED`, or `TRADE_DISABLED` stay in the queue indefinitely, retrying until terminal execution. Technical connection errors are safely capped at 3 retries.
 
 ---

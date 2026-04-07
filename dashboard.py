@@ -894,6 +894,12 @@ class Dashboard:
                         order_status = f"🟢 MT5: {order_id}"
                     elif msg.get('queued'):
                         order_status = "⏳ Price Queued"
+                    elif msg.get('hard_stop'):
+                        order_status = "🛑 Global STOP"
+                    elif msg.get('managed'):
+                        order_status = "🎯 Profit Managed"
+                    elif msg.get('updated'):
+                        order_status = "🔄 Entry/SL Updated"
                     elif error == "MARKET_CLOSED":
                         order_status = "🌙 Market Closed"
                     elif error == "TRADE_DISABLED":
@@ -931,36 +937,50 @@ SL: {sl_val} | <span style="font-weight: 800; color: {'#00F5FF' if order_id else
             else:
                 st.warning("Paste a message first.")
 
-    def render_symbol_settings(self, symbol, settings):
+    def render_symbol_settings(self, symbol, settings, state):
         st.markdown('<div class="tile-grid">', unsafe_allow_html=True)
         st.markdown(f'<p class="dashboard-grid-header">{symbol} CONFIG</p>', unsafe_allow_html=True)
         
+        # Define callbacks for instant saving
+        def on_risk_change():
+            val = st.session_state[f"risk_{symbol}"]
+            settings['risk_usd'] = val
+            state.save_settings()
+            st.toast(f"✅ {symbol} Risk updated to ${val}", icon="🛡️")
+
+        def on_be_change():
+            val = st.session_state[f"be_{symbol}"]
+            settings['be_rr'] = val
+            state.save_settings()
+            st.toast(f"✅ {symbol} BE updated to {val}R", icon="⚖️")
+
+        def on_rr_change():
+            val = st.session_state[f"rr_{symbol}"]
+            settings['rr_target'] = val
+            state.save_settings()
+            st.toast(f"✅ {symbol} Target updated to {val}R", icon="🎯")
+
         c1, c2 = st.columns(2)
         with c1:
-            new_risk = st.number_input(
-                "RISK ($) ✎", min_value=5, max_value=500, 
-                value=int(settings.get('risk_usd', 50)),
-                step=5, key=f"risk_{symbol}"
+            st.number_input(
+                "RISK ($) ✎", min_value=1.0, max_value=2000.0, 
+                value=float(settings.get('risk_usd', 50.0)),
+                step=1.0, key=f"risk_{symbol}", on_change=on_risk_change
             )
-            new_be = st.number_input(
-                "DYNAMIC BE ✎", min_value=0.5, max_value=12.0, 
+            st.number_input(
+                "DYNAMIC BE ✎", min_value=0.5, max_value=20.0, 
                 value=float(settings.get('be_rr', 2.0)),
-                step=0.1, key=f"be_{symbol}"
+                step=0.1, key=f"be_{symbol}", on_change=on_be_change
             )
 
         with c2:
-            new_rr = st.number_input(
-                "TARGET R/R ✎", min_value=1.0, max_value=25.0, 
+            st.number_input(
+                "TARGET R/R ✎", min_value=1.0, max_value=50.0, 
                 value=float(settings.get('rr_target', 6.0)),
-                step=0.5, key=f"rr_{symbol}"
+                step=0.5, key=f"rr_{symbol}", on_change=on_rr_change
             )
             st.markdown(f'<div class="dashboard-tile"><p class="tile-label">STATUS</p><p class="tile-value" style="color: #00FF9D; font-size: 0.85rem;">ACTIVE</p></div>', unsafe_allow_html=True)
         st.markdown('</div>', unsafe_allow_html=True)
-
-        # Sync values with settings object
-        settings['risk_usd'] = new_risk
-        settings['rr_target'] = new_rr
-        settings['be_rr'] = new_be
 
     def render_profile_tab(self, state, on_save_callback):
         """
@@ -974,11 +994,12 @@ SL: {sl_val} | <span style="font-weight: 800; color: {'#00F5FF' if order_id else
             </div>
         """, unsafe_allow_html=True)
 
-        from dotenv import load_dotenv
+        from dotenv import load_dotenv, set_key
+        env_path = os.path.join(os.path.dirname(__file__), ".env")
         load_dotenv(override=True)
 
         def mask_field(val: str, prefix_len=4):
-            if not val: return "NOT SET"
+            if not val or val == "Empty": return "NOT SET"
             return f"{val[:prefix_len]}..." if len(val) > prefix_len else val
 
         # Credentials Overview
@@ -996,9 +1017,9 @@ SL: {sl_val} | <span style="font-weight: 800; color: {'#00F5FF' if order_id else
                     st.toast("Testing Telegram Connection...", icon="📡")
             
             tg_api_id = os.getenv('TELEGRAM_API_ID', 'Empty')
-            tg_channel = os.getenv('CHANNEL_ID', 'Empty')
+            tg_channels = os.getenv('CHANNEL_IDS', 'Empty')
             st.info(f"""**API ID:** `{mask_field(tg_api_id, 3)}`  
-**CHANNEL ID:** `{tg_channel}`""")
+**LISTENERS:** `{tg_channels}`""")
 
             st.markdown("---")
             st.markdown("### 🧠 AI INTELLIGENCE")
@@ -1031,10 +1052,20 @@ SL: {sl_val} | <span style="font-weight: 800; color: {'#00F5FF' if order_id else
 **REGION:** `{mt5_region}`""")
 
             st.markdown("---")
-            st.markdown("### 🛡️ RISK PARAMETERS")
-            p_risk = float(os.getenv('RISK_USD', 50))
-            p_rr = float(os.getenv('RR_TARGET', 6.0))
-            st.info(f"**RISK:** `${p_risk}`  \n**RR TARGET:** `{p_rr}x`")
+            st.markdown("### 🛡️ GLOBAL RISK CONFIG")
+            
+            g_risk = st.number_input("Default Risk ($)", 1.0, 1000.0, float(os.getenv('RISK_USD', 50.0)), step=1.0)
+            g_rr = st.number_input("Default Master RR", 1.0, 50.0, float(os.getenv('RR_TARGET', 6.0)), step=0.5)
+            
+            if st.button("💾 Save Global Defaults", use_container_width=True):
+                set_key(env_path, "RISK_USD", str(g_risk))
+                set_key(env_path, "RR_TARGET", str(g_rr))
+                # Update GLOBAL in settings object too
+                state.settings['GLOBAL']['risk_usd'] = g_risk
+                state.settings['GLOBAL']['rr_target'] = g_rr
+                state.save_settings()
+                st.success("Global config updated in .env and memory.")
+                st.toast("Global settings saved!", icon="✅")
 
         # MULTI-CHANNEL MANAGEMENT
         st.markdown("<br>", unsafe_allow_html=True)

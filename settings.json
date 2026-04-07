@@ -1,0 +1,23 @@
+{
+  "GLOBAL": {
+    "risk_usd": 5.0,
+    "rr_target": 4.0,
+    "be_rr": 2.0,
+    "partial_rr": 4.0,
+    "partial_percent": 0.7
+  },
+  "XAUUSD": {
+    "risk_usd": 50.0,
+    "rr_target": 6.0,
+    "be_rr": 2.0,
+    "partial_rr": 4.0,
+    "partial_percent": 0.7
+  },
+  "EURUSD": {
+    "risk_usd": 50.0,
+    "rr_target": 4.0,
+    "be_rr": 2.0,
+    "partial_rr": 4.0,
+    "partial_percent": 0.7
+  }
+}

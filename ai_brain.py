@@ -23,32 +23,47 @@ class AIBrain:
 
     # ── STAGE 1: Fast Regex (sync, microseconds) ───────────────────────────────
 
-    def _regex_parse(self, text: str, config: dict):
+    def _regex_parse(self, text: str, config: dict, parent_context: dict | None = None):
         """
         Returns a signal dict if a fast-path keyword match is found, else None.
         This runs synchronously before any async stage is started.
         """
         text_lower = text.lower()
+        
+        # Decide which symbol to use: 
+        # 1. Mentioned in current text? (basic check)
+        # 2. In parent context?
+        # 3. Default XAUUSD
+        fallback_sym = "XAUUSD"
+        if parent_context and parent_context.get('symbol'):
+            fallback_sym = parent_context['symbol']
+            
+        # Basic symbol detection for regex stage
+        detected_sym = fallback_sym
+        if "eurusd" in text_lower: detected_sym = "EURUSD"
+        elif "gbpusd" in text_lower: detected_sym = "GBPUSD"
+        elif "usdcad" in text_lower: detected_sym = "USDCAD"
+        elif "gold" in text_lower or "xau" in text_lower: detected_sym = "XAUUSD"
 
         if any(kw.lower() in text_lower for kw in config.get("cancel_keywords", [])):
-            print("⚡ [Fast Path] Matched CANCEL")
-            return {"type": "CANCEL", "symbol": "XAUUSD", "entry": None,
+            print(f"⚡ [Fast Path] Matched CANCEL (Sym: {detected_sym})")
+            return {"type": "CANCEL", "symbol": detected_sym, "entry": None,
                     "sl": None, "side": None, "tps": [], "risk_level": "normal"}
 
         if any(kw.lower() in text_lower for kw in config.get("tp_hit_keywords", [])):
             tp_level = 2 if ("2" in text_lower or "دوم" in text_lower) else 1
-            print(f"⚡ [Fast Path] Matched TP_HIT (Level {tp_level})")
-            return {"type": "TP_HIT", "symbol": "XAUUSD", "tp_level": tp_level}
+            print(f"⚡ [Fast Path] Matched TP_HIT (Level {tp_level}, Sym: {detected_sym})")
+            return {"type": "TP_HIT", "symbol": detected_sym, "tp_level": tp_level}
 
         if any(kw.lower() in text_lower for kw in config.get("reentry_keywords", [])):
             side = self._extract_side(text_lower)
-            print(f"⚡ [Fast Path] Matched REENTRY (Side: {side})")
-            return {"type": "REENTRY", "symbol": "XAUUSD", "side": side}
+            print(f"⚡ [Fast Path] Matched REENTRY (Side: {side}, Sym: {detected_sym})")
+            return {"type": "REENTRY", "symbol": detected_sym, "side": side}
 
         if any(kw.lower() in text_lower for kw in config.get("pullback_keywords", [])):
             side = self._extract_side(text_lower)
-            print(f"⚡ [Fast Path] Matched PULLBACK (Side: {side})")
-            return {"type": "PULLBACK", "symbol": "XAUUSD", "side": side}
+            print(f"⚡ [Fast Path] Matched PULLBACK (Side: {side}, Sym: {detected_sym})")
+            return {"type": "PULLBACK", "symbol": detected_sym, "side": side}
 
         return None
 
@@ -90,7 +105,7 @@ class AIBrain:
 
     # ── STAGE 2: Gemini AI (async, ~900ms) ─────────────────────────────────────
 
-    async def _ai_parse(self, text: str, image_bytes: bytes | None) -> dict | None:
+    async def _ai_parse(self, text: str, image_bytes: bytes | None, parent_context: dict | None = None) -> dict | None:
         system_instruction = """
         You are a highly accurate specialized trading signal parser for the London Gold Bot.
         Analyze Telegram messages (text and/or charts) to extract trading signals for Forex (including Gold/XAUUSD, EURUSD, GBPUSD, etc.).
@@ -128,8 +143,11 @@ class AIBrain:
            - Look for horizontal lines: Red/Orange is usually SL. Green/Blue is usually Entry/TP.
            - Extract SL and Entry from the numeric labels next to these lines.
         6. DEFAULT SYMBOL: "XAUUSD" if not specified.
-        7. OUTPUT: Return ONLY a JSON object with keys: type ("NEW", "UPDATE", "CANCEL", "REENTRY", "PULLBACK", "TP_HIT", or "STOP"), symbol, entry, sl, side, tps (a list of numbers), tp_level (for TP_HIT), and risk_level.
-        8. RISK LEVEL: Detect if the signal indicates elevated risk.
+        7. REPLIED MESSAGE CONTEXT: If provided, this is the text and symbol of the message being replied to.
+           - If the current message is ambiguous (e.g., "Cancel", "Re-entry", "Update") and lacks a symbol, you MUST inherit the symbol and trade side from this context.
+           - Example: Parent says "XAUUSD Buy", Reply says "Cancel" -> Parse as CANCEL for XAUUSD.
+        8. OUTPUT: Return ONLY a JSON object with keys: type ("NEW", "UPDATE", "CANCEL", "REENTRY", "PULLBACK", "TP_HIT", or "STOP"), symbol, entry, sl, side, tps (a list of numbers), tp_level (for TP_HIT), and risk_level.
+        9. RISK LEVEL: Detect if the signal indicates elevated risk.
            - Set risk_level to "high" if keywords like "highrisk", "high risk", "risky", "aggressive", "پرریسک", "ریسک بالا" are present.
            - Otherwise, set risk_level to "normal".
 
@@ -141,14 +159,19 @@ class AIBrain:
         Text: "Stop XAUUSD" -> { "type": "STOP", "symbol": "XAUUSD" }
         Text: "اوردر فعال نشد کنسل شود" -> { "type": "CANCEL", "symbol": "XAUUSD", "entry": null, "sl": null, "side": null, "tps": [], "risk_level": "normal" }
         Text: "XAUUSD order must be cancelled" -> { "type": "CANCEL", "symbol": "XAUUSD", "entry": null, "sl": null, "side": null, "tp": null, "risk_level": "normal" }
-        Text: "Gold order not triggered, cancel it" -> { "type": "CANCEL", "symbol": "XAUUSD", "entry": null, "sl": null, "side": null, "tp": null, "risk_level": "normal" }
+        Text: "XAUUSD order not triggered, cancel it" -> { "type": "CANCEL", "symbol": "XAUUSD", "entry": null, "sl": null, "side": null, "tp": null, "risk_level": "normal" }
+        Text: "اوردر برداشته شود" -> { "type": "CANCEL", "symbol": "XAUUSD" }
+        Text: "دوباره وارد بشید" -> { "type": "REENTRY", "symbol": "XAUUSD" }
         """
 
         contents = []
         if image_bytes:
             contents.append(types.Part.from_bytes(data=image_bytes, mime_type="image/jpeg"))
         if text:
-            contents.append(types.Part.from_text(text=text))
+            content_text = text
+            if parent_context:
+                content_text = f"REPLIED MESSAGE CONTEXT:\nSymbol: {parent_context.get('symbol')}\nText: {parent_context.get('text')}\n\nCURRENT MESSAGE:\n{text}"
+            contents.append(types.Part.from_text(text=content_text))
         if not contents:
             return None
 
@@ -178,22 +201,32 @@ class AIBrain:
 
     # ── STAGE 3: Vector Search (async, ~80ms) ──────────────────────────────────
 
-    def _vector_result_to_signal(self, sig_type: str, text_lower: str) -> dict:
+    def _vector_result_to_signal(self, sig_type: str, text_lower: str, parent_context: dict | None = None) -> dict:
         """Convert a vector match type into the same signal dict format."""
+        # Symbol fallback
+        fallback_sym = "XAUUSD"
+        if parent_context and parent_context.get('symbol'):
+            fallback_sym = parent_context['symbol']
+            
+        detected_sym = fallback_sym
+        if "eurusd" in text_lower: detected_sym = "EURUSD"
+        elif "gbpusd" in text_lower: detected_sym = "GBPUSD"
+        elif "gold" in text_lower or "xau" in text_lower: detected_sym = "XAUUSD"
+
         if sig_type == "CANCEL":
-            return {"type": "CANCEL", "symbol": "XAUUSD", "entry": None,
+            return {"type": "CANCEL", "symbol": detected_sym, "entry": None,
                     "sl": None, "side": None, "tps": [], "risk_level": "normal"}
         if sig_type == "TP_HIT":
             tp_level = 2 if ("2" in text_lower or "دوم" in text_lower) else 1
-            return {"type": "TP_HIT", "symbol": "XAUUSD", "tp_level": tp_level}
+            return {"type": "TP_HIT", "symbol": detected_sym, "tp_level": tp_level}
         if sig_type in ("REENTRY", "PULLBACK", "STOP"):
             side = self._extract_side(text_lower)
-            return {"type": sig_type, "symbol": "XAUUSD", "side": side}
+            return {"type": sig_type, "symbol": detected_sym, "side": side}
         return None
 
     # ── Main Entry ──────────────────────────────────────────────────────────────
 
-    async def filter_signal(self, text: str, image_bytes: bytes | None = None):
+    async def filter_signal(self, text: str, image_bytes: bytes | None = None, parent_context: dict | None = None):
         """
         3-Stage Waterfall Signal Parser
         ════════════════════════════════
@@ -215,7 +248,7 @@ class AIBrain:
 
         # ── STAGE 1: REGEX (sync gate) ─────────────────────────────────────────
         if text and not image_bytes:
-            result = self._regex_parse(text, config)
+            result = self._regex_parse(text, config, parent_context=parent_context)
             if result:
                 result['parsed_by'] = 'regex'
                 return result  # Saved all API costs
@@ -233,7 +266,7 @@ class AIBrain:
         has_vector = vec_index is not None and vec_index.is_ready and text and not image_bytes
 
         # Create AI task
-        ai_task = asyncio.create_task(self._ai_parse(text, image_bytes))
+        ai_task = asyncio.create_task(self._ai_parse(text, image_bytes, parent_context=parent_context))
 
         if has_vector:
             # Create vector task
@@ -253,7 +286,7 @@ class AIBrain:
                         await ai_task
                     except asyncio.CancelledError:
                         pass
-                    signal = self._vector_result_to_signal(sig_type, text.lower() if text else "")
+                    signal = self._vector_result_to_signal(sig_type, text.lower() if text else "", parent_context=parent_context)
                     if signal:
                         signal['parsed_by'] = f'vector:{confidence:.2f}'
                         print(f"🔮 [Vector] Early exit: {sig_type} (confidence={confidence:.3f})")
@@ -281,6 +314,12 @@ class AIBrain:
                 ai_result = await ai_task
                 ai_result = self._correct_side(ai_result, text.lower() if text else "")
                 if ai_result:
+                    # If we have parent context and AI didn't find a symbol/side, use parent's
+                    if parent_context:
+                        if not ai_result.get('symbol') or ai_result.get('symbol') == 'XAUUSD':
+                             # AI often defaults to XAUUSD. If parent has something else, prefer parent.
+                             if parent_context.get('symbol'):
+                                 ai_result['symbol'] = parent_context['symbol']
                     ai_result['parsed_by'] = 'ai'
                 return ai_result
             except Exception as e:
