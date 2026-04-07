@@ -15,10 +15,12 @@ from ai_brain import AIBrain
 from trading_engine import TradingEngine
 from telegram_listener import TelegramListener
 from dashboard import Dashboard
+from vector_index import VectorIndex
 
 load_dotenv()
 
 HISTORY_FILE = os.path.join(os.path.dirname(__file__), "signals_history.json")
+PENDING_QUEUE_FILE = os.path.join(os.path.dirname(__file__), "pending_queue.json")
 
 
 def save_history(history: list):
@@ -40,6 +42,28 @@ def load_history() -> list:
     except Exception as e:
         print(f"[Storage] Load error: {e}")
         return []
+
+
+def save_pending_queue(queue: list):
+    """Persist pending queue to disk."""
+    try:
+        with open(PENDING_QUEUE_FILE, "w") as f:
+            json.dump(queue, f, indent=2, default=str)
+    except Exception as e:
+        print(f"[Storage] Pending queue save error: {e}")
+
+
+def load_pending_queue() -> list:
+    """Load pending queue from disk on startup."""
+    if not os.path.exists(PENDING_QUEUE_FILE):
+        return []
+    try:
+        with open(PENDING_QUEUE_FILE, "r") as f:
+            return json.load(f)
+    except Exception as e:
+        print(f"[Storage] Pending queue load error: {e}")
+        return []
+
 
 
 def update_env_file(new_values: dict):
@@ -83,6 +107,7 @@ class BotState:
         self.logs = []
         self.history = load_history()   # Loaded from disk on startup
         self.seen_ids = set()           # Tracks Telegram message IDs
+        self.boot_time = datetime.now(timezone.utc) # Track when bot started
         
         # Segmented Metrics
         self.metrics = {
@@ -97,7 +122,7 @@ class BotState:
                 self.seen_ids.add(entry['msg_id'])
         
         self.is_running = False
-        self.tg_connected = False
+        self.telegram_connected = False
         self.mt5_connected = False
         self.lock = None                # Initialized in worker loop
         self.restart_event = None       # Initialized in worker loop
@@ -105,7 +130,7 @@ class BotState:
         self.active_trades = []
         self.active_positions = []
         self.active_orders = []
-        self.pending_queue = []
+        self.pending_queue = load_pending_queue()  # Restored from disk on startup
         self.commands = []
         self.ai_connected = True  # Default to true, updated in loop
         self.setup_needed = False
@@ -115,13 +140,11 @@ class BotState:
         self.tg_phone_code_hash = None
         self.temp_tg_client = None
         self.worker_started = False
-        self.boot_time = datetime.now(timezone.utc) # track bot start time to skip history
         self.channels = [] # List of {"id": str/int, "name": str}
         self.verify_result = None # Temporary storage for verification name
         self.tg_me = None
         self.tg_auth_status = None
-        
-        self.active_view = "XAUUSD" # Navigation view
+        self.vector_index = None   # Populated by bot_worker after AI init
         
         # Per-symbol settings
         default_conf = {
@@ -139,8 +162,8 @@ class BotState:
 
 
 @st.cache_resource
-def get_bot_state_v4():
-    """V4 naming forces a streamlit cache invalidation to fix attribute errors."""
+def get_bot_state_v3():
+    """V3 naming forces a streamlit cache invalidation to fix attribute errors."""
     return BotState()
 
 
@@ -152,6 +175,7 @@ async def bot_worker(state: BotState):
     state.restart_event = asyncio.Event()
 
     state.logs.append({"time": datetime.now().strftime("%H:%M:%S"), "preview": "System Booting...", "type": "BOOT"})
+    state.boot_time = datetime.now(timezone.utc) # Reset boot_time for filtering
 
     # --- Setup Detection ---
     def is_setup_incomplete():
@@ -212,6 +236,16 @@ async def bot_worker(state: BotState):
         engine   = TradingEngine(meta_token, meta_account, meta_region)
         listener = TelegramListener(api_id=int(tg_id), api_hash=tg_hash, channel_ids=c_ids, session_name=tg_session)
 
+        # Build Vector Intelligence Index
+        state.vector_index = VectorIndex(ai.client)
+        try:
+            build_result = await state.vector_index.build()
+            ai.set_vector_index(state.vector_index)
+            state.logs.append({"time": datetime.now().strftime("%H:%M:%S"), "preview": f"🔮 Vector Index ready: {build_result['counts']}", "type": "SYSTEM"})
+        except Exception as ve:
+            print(f"[VectorIndex] Build failed: {ve}")
+            state.logs.append({"time": datetime.now().strftime("%H:%M:%S"), "preview": f"⚠️ Vector Index unavailable: {ve}", "type": "ERROR"})
+
     # ── Helpers ────────────────────────────────────────────────────────────────
     async def process_signal(raw_text: str, source: str, msg_id: int = None, quiet: bool = False, image_bytes: bytes = None, msg_date: datetime = None):
         """Parse text with AI, auto-execute if signal, persist to disk."""
@@ -219,18 +253,26 @@ async def bot_worker(state: BotState):
             print("⚠️ AI not initialized yet.")
             return
             
-        # ── BOOT TIME FILTER ───────────────────────────────────────────────
-        if msg_date and state.boot_time and msg_date < state.boot_time:
-            if not quiet:
-                diff = (state.boot_time - msg_date).total_seconds()
-                print(f"⏩ Ignoring historical signal (Pre-boot): ID {msg_id} ({int(diff)}s old)")
-            return
-
         # ── UNIQUE CHECK (LOCKED) ──────────────────────────────────────────────
         if msg_id and msg_id in state.seen_ids:
             if not quiet:
                 print(f"⏩ Skipping duplicate signal: ID {msg_id}")
             return
+        
+        # ── BOOT TIME FILTER ──────────────────────────────────────────────────
+        is_historical = False
+        if msg_date:
+            # Ensure msg_date is offset-aware for comparison if it is, else make it naive
+            # Telethon dates are usually UTC offset-aware
+            if msg_date.tzinfo is None:
+                # If naive, assume it's local or match boot_time's naivety
+                # But best to keep everything offset-aware
+                msg_date = msg_date.replace(tzinfo=timezone.utc)
+            
+            if msg_date < state.boot_time:
+                if not quiet:
+                    print(f"⏳ Ignoring historical signal from {msg_date} (Boot: {state.boot_time})")
+                return
         
         async with (state.lock if state.lock else asyncio.Lock()):
             if msg_id:
@@ -255,54 +297,73 @@ async def bot_worker(state: BotState):
             })
             return
 
+        # ── Auto-learn: AI-parsed categorical signals → add to vector index ──
+        # Only short texts (no price numbers) to avoid memorizing specific trade data
+        if (signal_data.get('parsed_by') == 'ai'
+                and raw_text
+                and len(raw_text.strip()) < 80
+                and signal_data.get('type') in ('REENTRY', 'PULLBACK', 'CANCEL', 'TP_HIT', 'STOP')
+                and ai._vector_index is not None):
+            sig_type = signal_data['type']
+            added = await ai._vector_index.add_example(sig_type, raw_text.strip())
+            if added:
+                print(f"🧠 [AutoLearn] Added '{raw_text.strip()[:40]}' → {sig_type} to vector index")
+
+
+        if is_historical:
+            state.logs.append({
+                "time": datetime.now().strftime("%H:%M:%S"),
+                "type": "SYSTEM",
+                "preview": f"[{source}] Historical signal logged but NOT executed (sent before boot)."
+            })
+            return
+
         sym    = signal_data.get('symbol', 'XAUUSD')
         sig_type = signal_data.get('type', 'NEW').upper()
 
         if sig_type == 'UPDATE':
-            # ── UPDATE: modify the last open position for this symbol ──────
-            state.logs.append({
-                "time": datetime.now().strftime("%H:%M:%S"),
-                "type": "SIGNAL",
-                "preview": f"[{source}] 🔄 UPDATE {sym} → entry:{signal_data['entry']} SL:{signal_data['sl']}"
-            })
-            entry['updated'] = True
-            save_history(state.history)
-
+            # ── UPDATE: first check pending queue, then fallback to live positions ──
             found_in_queue = False
             async with (state.lock if state.lock else asyncio.Lock()):
-                # 1. Check pending queue first (local state)
                 for q_item in state.pending_queue:
                     if q_item['symbol'] == sym:
-                        q_item['data']['entry'] = signal_data['entry']
-                        q_item['data']['sl'] = signal_data['sl']
+                        q_item['data']['entry'] = float(signal_data.get('entry', q_item['data']['entry']))
+                        q_item['data']['sl'] = float(signal_data.get('sl', q_item['data']['sl']))
+                        q_item['retries'] = 0 # Priority retry
                         found_in_queue = True
                         break
-
+            
             if found_in_queue:
                 state.logs.append({
                     "time": datetime.now().strftime("%H:%M:%S"),
                     "type": "SIGNAL",
-                    "preview": f"✅ [{source}] Local Pending Trade updated for {sym}"
+                    "preview": f"✅ [{source}] Updated PENDING {sym} in queue."
                 })
-                entry['order_id'] = "QUEUED_UPDATE"
+                entry['order_id'] = "QUEUED_UPD" # Marker for UI
                 save_history(state.history)
                 return
 
-            # 2. Check broker positions/orders
-            # Use symbol-specific settings
-            sym_settings = state.settings.get(sym, state.settings["GLOBAL"])
+            # Fallback to live trades on MT5
+            state.logs.append({
+                "time": datetime.now().strftime("%H:%M:%S"),
+                "type": "SIGNAL",
+                "preview": f"[{source}] 🔄 UPDATE {sym} (MT5) → entry:{signal_data['entry']} SL:{signal_data['sl']}"
+            })
+            entry['updated'] = True
+            save_history(state.history)
+            
             if engine:
                 order_id = await engine.modify_last_trade(
                     sym,
                     float(signal_data['entry']),
                     float(signal_data['sl']),
-                    sym_settings
+                    state.settings.get(sym, state.settings["GLOBAL"])
                 )
                 if order_id:
                     state.logs.append({
                         "time": datetime.now().strftime("%H:%M:%S"),
                         "type": "SIGNAL",
-                        "preview": f"✅ [{source}] Broker trade updated: {order_id}"
+                        "preview": f"✅ [{source}] Live trade updated: {order_id}"
                     })
                     entry['order_id'] = order_id
                     save_history(state.history)
@@ -310,16 +371,265 @@ async def bot_worker(state: BotState):
                     state.logs.append({
                         "time": datetime.now().strftime("%H:%M:%S"),
                         "type": "NOISE",
-                        "preview": f"❌ [{source}] Update failed — no active position or queued trade for {sym}"
+                        "preview": f"❌ [{source}] Update failed — no active {sym} found."
                     })
-                    entry['error'] = "NOT_FOUND" # So dashboard knows it's not 'filtered'
+                    entry['error'] = "UPDATE_FAILED"
+                    save_history(state.history)
+
+
+        elif sig_type == 'CANCEL':
+            # ── CANCEL: drop from pending queue first, then cancel on MT5 ──
+            state.logs.append({
+                "time": datetime.now().strftime("%H:%M:%S"),
+                "type": "SIGNAL",
+                "preview": f"[{source}] 🚫 CANCEL signal received for {sym}"
+            })
+            cancelled_from_queue = False
+            async with (state.lock if state.lock else asyncio.Lock()):
+                before_len = len(state.pending_queue)
+                state.pending_queue = [q for q in state.pending_queue if q['symbol'] != sym]
+                cancelled_from_queue = len(state.pending_queue) < before_len
+                if cancelled_from_queue:
+                    save_pending_queue(state.pending_queue)
+
+            if cancelled_from_queue:
+                state.logs.append({
+                    "time": datetime.now().strftime("%H:%M:%S"),
+                    "type": "SIGNAL",
+                    "preview": f"✅ [{source}] Cancelled pending {sym} order from queue."
+                })
+                entry['order_id'] = "CANCELLED_Q"
+                save_history(state.history)
+
+            # Also try to cancel any live pending order on MT5
+            if engine:
+                cancelled_live = await engine.cancel_last_order(sym)
+                if cancelled_live:
+                    state.logs.append({
+                        "time": datetime.now().strftime("%H:%M:%S"),
+                        "type": "SIGNAL",
+                        "preview": f"✅ [{source}] Cancelled live MT5 order for {sym}."
+                    })
+                    entry['order_id'] = entry.get('order_id', '') or "CANCELLED_MT5"
+                    save_history(state.history)
+                elif not cancelled_from_queue:
+                    state.logs.append({
+                        "time": datetime.now().strftime("%H:%M:%S"),
+                        "type": "NOISE",
+                        "preview": f"⚠️ [{source}] No open order found to cancel for {sym}."
+                    })
+
+        elif sig_type == 'REENTRY':
+            state.logs.append({
+                "time": datetime.now().strftime("%H:%M:%S"),
+                "type": "SIGNAL",
+                "preview": f"[{source}] 🔄 RE-ENTRY request for {sym}"
+            })
+            if engine:
+                # Only pass a side override if the message explicitly named one
+                # 'UNKNOWN' means the reentry message had no side keyword — inherit from previous trade
+                raw_side = signal_data.get('side', '')
+                side_override = raw_side if raw_side and raw_side not in ('UNKNOWN', '') else None
+                params = await engine.get_last_trade_params(sym, side=side_override)
+                
+                if params:
+                    side_to_use = params['side'].upper()
+                    VALID_SIDES = {'BUY', 'SELL', 'BUY_STOP', 'SELL_STOP', 'BUY_LIMIT', 'SELL_LIMIT'}
+
+                    # SAFETY: abort if side is still invalid
+                    if side_to_use not in VALID_SIDES:
+                        state.logs.append({
+                            "time": datetime.now().strftime("%H:%M:%S"),
+                            "type": "ERROR",
+                            "preview": f"🚨 [{source}] REENTRY ABORTED — invalid side '{side_to_use}'. Refusing to open."
+                        })
+                        entry['error'] = "REENTRY_INVALID_SIDE"
+                        save_history(state.history)
+                    else:
+                        entry_price = params.get('entry')
+                        sl_price    = params.get('sl')
+                        base_side   = side_to_use.replace("_STOP","").replace("_LIMIT","")  # BUY or SELL
+
+                        # ── Smart pending vs market decision ───────────────────
+                        # Get current price to decide if entry is still pending
+                        actual_side = side_to_use  # start with what history says
+                        try:
+                            if entry_price and engine and engine.connection:
+                                price_info = await engine.connection.get_symbol_price(params['symbol'])
+                                if price_info:
+                                    ask = float(price_info.get('ask', 0))
+                                    bid = float(price_info.get('bid', 0))
+                                    current = ask if base_side == 'BUY' else bid
+
+                                    if base_side == 'BUY' and current < float(entry_price):
+                                        # Price is below entry → BUY_STOP is still valid (pending)
+                                        actual_side = 'BUY_STOP'
+                                    elif base_side == 'SELL' and current > float(entry_price):
+                                        # Price is above entry → SELL_STOP is still valid (pending)
+                                        actual_side = 'SELL_STOP'
+                                    else:
+                                        # Price already past entry → go market on same side
+                                        actual_side = base_side
+                                        entry_price = None  # market order ignores entry
+                        except Exception as e:
+                            print(f"⚠️ [REENTRY] Price check failed: {e} — using stored side")
+
+                        is_pending  = "STOP" in actual_side or "LIMIT" in actual_side
+                        entry_to_use = entry_price if is_pending else None
+
+                        reentry_data = {
+                            'type': 'NEW',
+                            'symbol': params['symbol'],
+                            'side': actual_side,
+                            'entry': entry_to_use,
+                            'sl': sl_price,
+                            'risk_level': signal_data.get('risk_level', params.get('risk_level', 'normal'))
+                        }
+
+                        price_str = f"@{entry_to_use}" if entry_to_use else "@ Market"
+                        state.logs.append({
+                            "time": datetime.now().strftime("%H:%M:%S"),
+                            "type": "SIGNAL",
+                            "preview": f"🚀 [{source}] Re-entering {params['symbol']} {actual_side} {price_str} | SL: {sl_price}"
+                        })
+
+                        sym_settings = state.settings.get(params['symbol'], state.settings["GLOBAL"])
+                        resp = await engine.execute_trade(reentry_data, sym_settings, source="Telegram", fallback_to_market=True)
+
+                        if resp.get('id'):
+                            state.logs.append({
+                                "time": datetime.now().strftime("%H:%M:%S"),
+                                "type": "SIGNAL",
+                                "preview": f"✅ [{source}] Re-entry successful: {resp['id']}"
+                            })
+                            entry['order_id'] = resp['id']
+                            save_history(state.history)
+                        else:
+                            state.logs.append({
+                                "time": datetime.now().strftime("%H:%M:%S"),
+                                "type": "NOISE",
+                                "preview": f"❌ [{source}] Re-entry failed: {resp.get('error')}"
+                            })
+                            entry['error'] = resp.get('error', "REENTRY_FAILED")
+                            save_history(state.history)
+                else:
+                    state.logs.append({
+                        "time": datetime.now().strftime("%H:%M:%S"),
+                        "type": "NOISE",
+                        "preview": f"⚠️ [{source}] No previous trade found for {sym} to re-enter."
+                    })
+                    entry['error'] = "NO_PRIOR_TRADE"
+                    save_history(state.history)
+
+
+        elif sig_type == 'PULLBACK':
+            state.logs.append({
+                "time": datetime.now().strftime("%H:%M:%S"),
+                "type": "SIGNAL",
+                "preview": f"[{source}] 🧲 PULLBACK request for {sym}"
+            })
+            if engine:
+                # Find last trade params
+                side_override = signal_data.get('side')
+                params = await engine.get_last_trade_params(sym, side=side_override)
+                
+                if params and params.get('entry'):
+                    # Force side to a STOP order using the original side logic
+                    base_side = params['side'].replace("_STOP", "").replace("_LIMIT", "")
+                    side_to_use = f"{base_side}_STOP"
+                    
+                    entry_to_use = params['entry']
+
+                    pullback_data = {
+                        'type': 'NEW',
+                        'symbol': params['symbol'],
+                        'side': side_to_use,
+                        'entry': entry_to_use,
+                        'sl': params['sl'],
+                        'risk_level': signal_data.get('risk_level', params['risk_level'])
+                    }
+                    
+                    price_str = f"@{entry_to_use}"
+                    state.logs.append({
+                        "time": datetime.now().strftime("%H:%M:%S"),
+                        "type": "SIGNAL",
+                        "preview": f"🚀 [{source}] Pullback {params['symbol']} {side_to_use} {price_str}"
+                    })
+                    
+                    # Execute (fallback_to_market=True means if price already passed entry, it goes Market!)
+                    sym_settings = state.settings.get(params['symbol'], state.settings["GLOBAL"])
+                    resp = await engine.execute_trade(pullback_data, sym_settings, source="Telegram", fallback_to_market=True)
+                    
+                    if resp.get('id'):
+                        state.logs.append({
+                            "time": datetime.now().strftime("%H:%M:%S"),
+                            "type": "SIGNAL",
+                            "preview": f"✅ [{source}] Pullback successful: {resp['id']}"
+                        })
+                        entry['order_id'] = resp['id']
+                        save_history(state.history)
+                    else:
+                        state.logs.append({
+                            "time": datetime.now().strftime("%H:%M:%S"),
+                            "type": "NOISE",
+                            "preview": f"❌ [{source}] Pullback failed: {resp.get('error')}"
+                        })
+                        entry['error'] = resp.get('error', "PULLBACK_FAILED")
+                        save_history(state.history)
+                else:
+                    state.logs.append({
+                        "time": datetime.now().strftime("%H:%M:%S"),
+                        "type": "NOISE",
+                        "preview": f"⚠️ [{source}] No previous trade/entry found for {sym} for pullback."
+                    })
+                    entry['error'] = "NO_PRIOR_TRADE_ENTRY"
+                    save_history(state.history)
+
+        elif sig_type == 'TP_HIT':
+            tp_level = signal_data.get('tp_level', 1)
+            state.logs.append({
+                "time": datetime.now().strftime("%H:%M:%S"),
+                "type": "SIGNAL",
+                "preview": f"🎯 [{source}] TP{tp_level} Hit for {sym}. Executing profit management..."
+            })
+            if engine:
+                if tp_level == 1:
+                    success = await engine.set_be_for_symbol(sym)
+                    msg = f"{'✅ Moved to BE' if success else '⚠️ No active positions found'} for {sym}"
+                else:
+                    success = await engine.lock_profit_for_symbol(sym, tp_level)
+                    msg = f"{'✅ Profit Locked (TP' + str(tp_level) + ')' if success else '⚠️ Failed to lock profit'} for {sym}"
+                
+                state.logs.append({
+                    "time": datetime.now().strftime("%H:%M:%S"),
+                    "type": "SIGNAL",
+                    "preview": f"[{source}] {msg}"
+                })
+                entry['managed'] = True
+                save_history(state.history)
+
+        elif sig_type == 'STOP':
+            state.logs.append({
+                "time": datetime.now().strftime("%H:%M:%S"),
+                "type": "SIGNAL",
+                "preview": f"🛑 [{source}] HARD STOP received for {sym}. Cancelling all orders..."
+            })
+            if engine:
+                success = await engine.cancel_all_pending(sym)
+                state.logs.append({
+                    "time": datetime.now().strftime("%H:%M:%S"),
+                    "type": "SIGNAL",
+                    "preview": f"{'✅' if success else '⚠️'} Hard stop executed for {sym}."
+                })
+                entry['hard_stop'] = True
+                save_history(state.history)
 
         else:
             # ── NEW: open a fresh trade ───────────────────────────────────
             state.logs.append({
                 "time": datetime.now().strftime("%H:%M:%S"),
                 "type": "SIGNAL",
-                "preview": f"[{source}] {sym} {signal_data['side']} @ {signal_data['entry']} SL:{signal_data['sl']}"
+                "preview": f"[{source}] {sym} {signal_data['side']} @ {signal_data['entry']} SL:{signal_data['sl']}{' (⚠️ High Risk)' if signal_data.get('risk_level') == 'high' else ''}"
             })
             
             # Derive clean source tag for win-rate tracking
@@ -327,49 +637,56 @@ async def bot_worker(state: BotState):
             
             # Use symbol-specific settings
             sym_settings = state.settings.get(sym, state.settings["GLOBAL"])
+            
+            order_id = None
+            error = None
+            
             if engine:
                 resp = await engine.execute_trade(signal_data, sym_settings, source=clean_source)
                 order_id = resp.get('id')
                 error = resp.get('error')
+            else:
+                error = "DISCONNECTED"
 
-                if order_id:
-                    state.logs.append({
-                        "time": datetime.now().strftime("%H:%M:%S"),
-                        "type": "SIGNAL",
-                        "preview": f"✅ [{source}] Order placed: {order_id}"
-                    })
-                    entry['order_id'] = order_id
-                    save_history(state.history)
-                elif error in ["PRICE_ERROR", "MARKET_CLOSED", "TRADE_DISABLED", "INVALID_STOPS"]:
-                    # Added to Pending Queue for retry/visibility
-                    queue_item = {
-                        'id': f"pending_{int(time.time())}",
-                        'symbol': sym,
-                        'data': signal_data,
-                        'source': clean_source,
-                        'added_at': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                        'retries': 0,
-                        'error_type': error
-                    }
-                    async with (state.lock if state.lock else asyncio.Lock()):
-                        state.pending_queue.append(queue_item)
-                    
-                    state.logs.append({
-                        "time": datetime.now().strftime("%H:%M:%S"),
-                        "type": "SIGNAL",
-                        "preview": f"⏳ [{source}] {sym} {error} — Added to Activity Queue"
-                    })
-                    entry['queued'] = True
-                    entry['error'] = error
-                    save_history(state.history)
-                else:
-                    state.logs.append({
-                        "time": datetime.now().strftime("%H:%M:%S"),
-                        "type": "NOISE",
-                        "preview": f"❌ [{source}] Execution failed: {error or 'Check MT5 connection'}"
-                    })
-                    entry['error'] = error or "EXECUTION_FAILED"
-                    save_history(state.history)
+            if order_id:
+                state.logs.append({
+                    "time": datetime.now().strftime("%H:%M:%S"),
+                    "type": "SIGNAL",
+                    "preview": f"✅ [{source}] Order placed: {order_id}"
+                })
+                entry['order_id'] = order_id
+                save_history(state.history)
+            elif error in ["DISCONNECTED", "PRICE_ERROR", "MARKET_CLOSED", "TRADE_DISABLED", "INVALID_STOPS"]:
+                # Added to Pending Queue for retry/visibility
+                queue_item = {
+                    'id': f"pending_{int(time.time())}",
+                    'symbol': sym,
+                    'data': signal_data,
+                    'source': clean_source,
+                    'added_at': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    'retries': 0,
+                    'error_type': error
+                }
+                async with (state.lock if state.lock else asyncio.Lock()):
+                    state.pending_queue.append(queue_item)
+                    save_pending_queue(state.pending_queue)
+                
+                state.logs.append({
+                    "time": datetime.now().strftime("%H:%M:%S"),
+                    "type": "SIGNAL",
+                    "preview": f"⏳ [{source}] {sym} {error} — Added to Activity Queue"
+                })
+                entry['queued'] = True
+                entry['error'] = error
+                save_history(state.history)
+            else:
+                state.logs.append({
+                    "time": datetime.now().strftime("%H:%M:%S"),
+                    "type": "NOISE",
+                    "preview": f"❌ [{source}] Execution failed: {error or 'Check MT5 connection'}"
+                })
+                entry['error'] = error or "EXECUTION_FAILED"
+                save_history(state.history)
 
     # ── Command Processor ──────────────────────────────────────────────────────
     async def command_processor_loop():
@@ -380,6 +697,7 @@ async def bot_worker(state: BotState):
             await asyncio.sleep(0.5) 
             
             if state.commands:
+                print(f"DEBUG WORKER: commands found: {len(state.commands)}")
                 cmd = state.commands.pop(0)
                 try:
                     if cmd['type'] == 'PARSE_AND_EXECUTE':
@@ -400,7 +718,7 @@ async def bot_worker(state: BotState):
                                 "type": "SIGNAL",
                                 "preview": f"✅ Order placed: {order_id}"
                             })
-                        elif error in ["PRICE_ERROR", "MARKET_CLOSED", "TRADE_DISABLED", "INVALID_STOPS"]:
+                        elif error in ["DISCONNECTED", "PRICE_ERROR", "MARKET_CLOSED", "TRADE_DISABLED", "INVALID_STOPS"]:
                             # Added to Pending Queue for retry/visibility
                             queue_item = {
                                 'id': f"pending_{int(time.time())}",
@@ -413,6 +731,7 @@ async def bot_worker(state: BotState):
                             }
                             async with (state.lock if state.lock else asyncio.Lock()):
                                 state.pending_queue.append(queue_item)
+                                save_pending_queue(state.pending_queue)
                             
                             state.logs.append({
                                 "time": datetime.now().strftime("%H:%M:%S"),
@@ -429,6 +748,7 @@ async def bot_worker(state: BotState):
                     elif cmd['type'] == 'DROP_QUEUED_TRADE':
                         queue_id = cmd['queue_id']
                         state.pending_queue = [q for q in state.pending_queue if q['id'] != queue_id]
+                        save_pending_queue(state.pending_queue)
                         state.logs.append({
                             "time": datetime.now().strftime("%H:%M:%S"),
                             "type": "SYSTEM",
@@ -456,6 +776,7 @@ async def bot_worker(state: BotState):
                                 })
                                 # Remove from queue
                                 state.pending_queue = [q for q in state.pending_queue if q['id'] != queue_id]
+                                save_pending_queue(state.pending_queue)
                             else:
                                 state.logs.append({
                                     "time": datetime.now().strftime("%H:%M:%S"),
@@ -464,13 +785,36 @@ async def bot_worker(state: BotState):
                                 })
 
                     elif cmd['type'] == 'CLOSE_TRADE':
-                        if not engine: continue
+                        print(f"DEBUG WORKER: Received CLOSE_TRADE for {cmd['id']}")
+                        if not engine: 
+                            print(f"DEBUG WORKER: engine is NONE, cannot close trade!")
+                            continue
                         print(f"💰 Command: CLOSE_TRADE {cmd['id']}")
                         success = await engine.close_trade(cmd['id'])
                         state.logs.append({
                             "time": datetime.now().strftime("%H:%M:%S"),
                             "type": "SYSTEM",
                             "preview": f"{'✅' if success else '❌'} Trade closed: {cmd['id']}"
+                        })
+
+                    elif cmd['type'] == 'SET_BE':
+                        if not engine: continue
+                        print(f"💰 Command: SET_BE for {cmd['id']}")
+                        success = await engine.set_be(cmd['id'])
+                        state.logs.append({
+                            "time": datetime.now().strftime("%H:%M:%S"),
+                            "type": "SYSTEM",
+                            "preview": f"{'✅' if success else '❌'} BE set for {cmd['id']}"
+                        })
+
+                    elif cmd['type'] == 'RESTORE_SL':
+                        if not engine: continue
+                        print(f"💰 Command: RESTORE_SL for {cmd['id']}")
+                        success = await engine.restore_sl(cmd['id'])
+                        state.logs.append({
+                            "time": datetime.now().strftime("%H:%M:%S"),
+                            "type": "SYSTEM",
+                            "preview": f"{'✅' if success else '❌'} SL restored for {cmd['id']}"
                         })
 
                     elif cmd['type'] == 'TRAIL_SL':
@@ -480,7 +824,7 @@ async def bot_worker(state: BotState):
                         state.logs.append({
                             "time": datetime.now().strftime("%H:%M:%S"),
                             "type": "SYSTEM",
-                            "preview": f"{'✅' if success else '❌'} SL restored for {cmd['id']}"
+                            "preview": f"{'✅' if success else '❌'} SL adjusted to {cmd['sl']} for {cmd['id']}"
                         })
 
                     elif cmd['type'] == 'PARTIAL_CLOSE':
@@ -494,15 +838,22 @@ async def bot_worker(state: BotState):
                         })
 
                     elif cmd['type'] == 'CLOSE_ALL_PROFITABLE':
-                        pass # handled elsewhere
+                        if not engine: continue
+                        sym = cmd.get('symbol', 'GLOBAL')
+                        print(f"💰 Command: CLOSE_ALL_PROFITABLE for {sym}")
+                        count = await engine.close_all_profitable(sym)
+                        state.logs.append({
+                            "time": datetime.now().strftime("%H:%M:%S"),
+                            "type": "SYSTEM",
+                            "preview": f"✅ Closed {count} profitable positions for {sym}"
+                        })
                     elif cmd['type'] == 'CLEAR_HISTORY':
                         state.history = []
                         save_history([])
                         state.logs.append({"time": datetime.now().strftime("%H:%M:%S"), "preview": "🧹 Signal history cleared.", "type": "SYSTEM"})
 
                     elif cmd['type'] == 'CLEAR_LOGS':
-                        print("🚀 [BotWorker] Starting initialization...")
-                        state.loop = loop
+                        state.logs.clear() # Fix: Ensure logs are actually cleared
                         state.logs.append({"time": datetime.now().strftime("%H:%M:%S"), "preview": "🧹 Logs cleared.", "type": "SYSTEM"})
 
                     elif cmd['type'] == 'FACTORY_RESET':
@@ -526,6 +877,11 @@ async def bot_worker(state: BotState):
                                 if k in os.environ:
                                     del os.environ[k]
                             
+                            # 4. Completely reset state cache flags
+                            state.telegram_connected = False
+                            state.gemini_connected = False
+                            state.meta_connected = False
+                            state.bot_active = False
                             state.setup_needed = True
                             state.setup_step = 1
                             state.logs.append({"time": datetime.now().strftime("%H:%M:%S"), "preview": "✅ All configurations cleared. Restarting to Setup Wizard.", "type": "SYSTEM"})
@@ -623,9 +979,21 @@ async def bot_worker(state: BotState):
                         state.logs.append({"time": datetime.now().strftime("%H:%M:%S"), "preview": "🚀 Bot Restarting...", "type": "SYSTEM"})
                         state.restart_event.set()
 
+                    elif cmd['type'] == 'REBUILD_VECTOR_INDEX':
+                        if state.vector_index:
+                            state.logs.append({"time": datetime.now().strftime("%H:%M:%S"), "preview": "🔮 Rebuilding Vector Index...", "type": "SYSTEM"})
+                            try:
+                                result = await state.vector_index.build(force=True)
+                                state.logs.append({"time": datetime.now().strftime("%H:%M:%S"), "preview": f"✅ Vector Index rebuilt: {result['counts']} | New embeddings: {result['new_embeds']}", "type": "SYSTEM"})
+                            except Exception as ve:
+                                state.logs.append({"time": datetime.now().strftime("%H:%M:%S"), "preview": f"❌ Rebuild failed: {ve}", "type": "ERROR"})
+                        else:
+                            state.logs.append({"time": datetime.now().strftime("%H:%M:%S"), "preview": "⚠️ Vector Index not initialized yet.", "type": "ERROR"})
+
                     elif cmd['type'] == 'CLEAR_PENDING':
                         count = len(state.pending_queue)
                         state.pending_queue.clear()
+                        save_pending_queue(state.pending_queue)
                         state.logs.append({"time": datetime.now().strftime("%H:%M:%S"), "preview": f"🧹 Cleared all {count} pending trades.", "type": "SYSTEM"})
 
                     # ── Setup Wizard Commands ───
@@ -700,6 +1068,8 @@ async def bot_worker(state: BotState):
                         state.commands.append({"type": "RESTART_BOT"})
 
                 except Exception as e:
+                    import traceback
+                    traceback.print_exc()
                     print(f"Command Error: {e}")
             await asyncio.sleep(1)
 
@@ -720,29 +1090,38 @@ async def bot_worker(state: BotState):
                     state.metrics[sym].update(sym_metrics)
 
                 # Telegram Status
-                state.tg_connected = listener is not None and listener.is_connected()
+                if not state.setup_needed:
+                    state.telegram_connected = listener is not None and listener.is_connected()
+                else:
+                    state.telegram_connected = False
                 
                 # MT5 Status: Check if connection exists and is actually healthy
-                is_connected = False
                 if engine and engine.connection:
-                    try:
-                        # Fast probe: check if connection is synchronized
-                        is_mt5_sync = getattr(engine.connection, 'synchronized', False)
-                        if is_mt5_sync:
-                            is_connected = True
-                        else:
-                            # If not synchronized yet, try a heartbeat heartbeat
-                            # This confirms the RPC channel is alive even if record sync is pending
+                    # Assume healthy if metrics show data
+                    if global_metrics.get('balance', 0) > 0:
+                        is_mt5_alive = True
+                    else:
+                        try:
+                            # Heartbeat probe if balance is 0 or potentially stale
                             await engine.connection.get_account_information()
-                            is_connected = True
-                            # Optional: Note if it was out of sync but responsive
-                            # print("⚠️ MT5: Connected but not yet synchronized.", flush=True)
-                    except Exception as e:
-                        # print(f"❌ MT5 Metric Error: {e}", flush=True)
-                        is_connected = False
+                            is_mt5_alive = True
+                        except:
+                            is_mt5_alive = False
+                    
+                    # Error thresholding to prevent flickering
+                    if not hasattr(state, '_mt5_fails'): state._mt5_fails = 0
+                    if is_mt5_alive:
+                        state._mt5_fails = 0
+                        state.mt5_connected = True
+                    else:
+                        state._mt5_fails += 1
+                        if state._mt5_fails >= 3: # 15 seconds of sustained failure
+                            state.mt5_connected = False
+                else:
+                    state.mt5_connected = False
+                    state._mt5_fails = 0
                 
-                state.mt5_connected = is_connected
-                state.ai_connected = ai is not None # Simplified check
+                state.ai_connected = ai is not None
                 
                 # Sync Active Trades with Source/Symbol Info
                 state.active_trades = [
@@ -765,17 +1144,22 @@ async def bot_worker(state: BotState):
 
     # ── Retry Queue Loop ────────────────────────────────────────────────────────
     async def retry_queue_loop():
-        """Automatically retry trades in the pending queue every 30 seconds."""
+        """Automatically retry trades in the pending queue every 5 seconds."""
+        last_log_time = 0
         while True:
-            await asyncio.sleep(30)
+            await asyncio.sleep(5)
             if not engine or not state.pending_queue:
                 continue
 
-            state.logs.append({
-                "time": datetime.now().strftime("%H:%M:%S"),
-                "type": "SYSTEM",
-                "preview": f"🔄 Auto-retrying {len(state.pending_queue)} pending trades..."
-            })
+            # Throttle the "Auto-retrying" log to avoid spam
+            current_time = time.time()
+            if current_time - last_log_time > 60: # Log once every minute
+                state.logs.append({
+                    "time": datetime.now().strftime("%H:%M:%S"),
+                    "type": "SYSTEM",
+                    "preview": f"🔄 Auto-retrying {len(state.pending_queue)} pending trades..."
+                })
+                last_log_time = current_time
 
             # Iterate copy to allow removal
             for item in list(state.pending_queue):
@@ -784,19 +1168,39 @@ async def bot_worker(state: BotState):
                 orig_source = item.get('source', 'Manual') 
                 sym = item['symbol']
                 sym_settings = state.settings.get(sym, state.settings["GLOBAL"])
-                resp = await engine.execute_trade(item['data'], sym_settings, source=orig_source)
                 
-                if resp.get('id'):
-                    state.logs.append({
-                        "time": datetime.now().strftime("%H:%M:%S"),
-                        "type": "SIGNAL",
-                        "preview": f"✅ Queued trade placed: {resp['id']} (Try #{item['retries']})"
-                    })
-                    state.pending_queue.remove(item)
-                else:
-                    # Still failing, update error info
-                    item['error_type'] = resp.get('error', 'PRICE_ERROR')
-                    pass
+                try:
+                    resp = await engine.execute_trade(item['data'], sym_settings, source=orig_source)
+                    
+                    if resp.get('id'):
+                        state.logs.append({
+                            "time": datetime.now().strftime("%H:%M:%S"),
+                            "type": "SIGNAL",
+                            "preview": f"✅ Queued trade placed: {resp['id']} (Try #{item['retries']})"
+                        })
+                        state.pending_queue.remove(item)
+                        save_pending_queue(state.pending_queue)
+                    else:
+                        # Still failing, update error info
+                        error_type = resp.get('error', 'PRICE_ERROR')
+                        item['error_type'] = error_type
+                        
+                        # CAPPING LOGIC:
+                        # Per user request: PRICE_ERROR, MARKET_CLOSED, etc. must NOT be dropped.
+                        # Only drops technical connection failures after 3 attempts.
+                        is_connectivity_error = error_type in ["DISCONNECTED", "CONNECTION_ERROR", "TIMEOUT", "INTERNAL_ERROR"]
+                        
+                        if is_connectivity_error and item['retries'] >= 3:
+                            state.logs.append({
+                                "time": datetime.now().strftime("%H:%M:%S"),
+                                "type": "ERROR",
+                                "preview": f"🛑 Trade {sym} DROPPED after {item['retries']} failed connection attempts."
+                            })
+                            state.pending_queue.remove(item)
+                        
+                        save_pending_queue(state.pending_queue)
+                except Exception as e:
+                    print(f"Retry Loop Exec Error: {e}")
 
     # ── Live Telegram Handler ───────────────────────────────────────────
     async def on_new_message(message):
@@ -830,7 +1234,7 @@ async def bot_worker(state: BotState):
                             image_bytes = await raw.download_media(file=bytes)
                         except: pass
                     # Quiet sync: don't spam 'skipping duplicate' logs every minute
-                    await process_signal(msg['text'], source="Telegram (Sync)", msg_id=msg['id'], quiet=True, image_bytes=image_bytes, msg_date=msg['date'])
+                    await process_signal(msg['text'], source="Telegram (Sync)", msg_id=msg['id'], quiet=True, image_bytes=image_bytes, msg_date=msg.get('date'))
             except Exception as e:
                 print(f"Sync Loop Error: {e}")
 
@@ -850,7 +1254,13 @@ async def bot_worker(state: BotState):
 
     async def connect_tg():
         if not listener:
-            print("❌ Cannot connect Telegram: Listener not initialized.")
+            # If setup is needed, we don't even log failure, it's expected
+            if not state.setup_needed:
+                print("❌ Cannot connect Telegram: Listener not initialized.")
+            return
+        
+        # Don't auto-connect if we're in the middle of setup, unless specifically triggered
+        if state.setup_needed:
             return
         state.logs.append({"time": datetime.now().strftime("%H:%M:%S"), "preview": "📡 Connecting to Telegram...", "type": "SYSTEM"})
         try:
@@ -860,13 +1270,24 @@ async def bot_worker(state: BotState):
             if me:
                 state.tg_me = f"{me.first_name} (@{me.username})" if me.username else me.first_name
             
-            state.tg_connected = True
+            state.telegram_connected = True
             state.logs.append({"time": datetime.now().strftime("%H:%M:%S"), "preview": "✅ Telegram Connection Established.", "type": "SYSTEM"})
 
-            # 2. ── SKIP Initial Boot Sync ─────────────────
-            # User requested: only process signals from the moment bot starts.
-            # We skip the check_for_missed_signals block.
-            print("📡 Bot started. Real-time monitoring active (Skipping history).")
+            # 2. ── Initial Boot Sync ─────────────────
+            # Process signals sent while bot was down
+            print("📡 Checking for missed signals during downtime...")
+            recent = await listener.get_recent_messages(limit=10)
+            for msg in reversed(recent):
+                msg_id = msg['id']
+                if msg_id and msg_id not in state.seen_ids:
+                    # Check for image media in synced messages
+                    raw = msg.get('raw')
+                    image_bytes = None
+                    if raw and raw.photo:
+                        try: image_bytes = await raw.download_media(file=bytes)
+                        except: pass
+                    # process_signal with msg_date filter will handle this perfectly.
+                    await process_signal(msg['text'], source="Telegram (Sync)", msg_id=msg_id, quiet=True, image_bytes=image_bytes, msg_date=msg.get('date'))
             
             # 3. Resolve metadata mapping for display
             print("📡 Updating channel names map...")
@@ -879,10 +1300,10 @@ async def bot_worker(state: BotState):
             
         except asyncio.TimeoutError:
             state.logs.append({"time": datetime.now().strftime("%H:%M:%S"), "preview": "⚠️ Telegram Connection Timed Out. Retrying in background...", "type": "ERROR"})
-            state.tg_connected = False
+            state.telegram_connected = False
         except Exception as e:
             state.logs.append({"time": datetime.now().strftime("%H:%M:%S"), "preview": f"❌ Telegram Failed: {str(e)}", "type": "ERROR"})
-            state.tg_connected = False
+            state.telegram_connected = False
             print(f"Telegram Startup Error: {e}")
 
     # ── Execution Logic ───────────────────────────────────────────────────────
@@ -910,6 +1331,8 @@ async def bot_worker(state: BotState):
 
             # Init Components
             ai       = AIBrain(gemini_key) if gemini_key else None
+            if ai and hasattr(state, 'vector_index') and state.vector_index:
+                ai.set_vector_index(state.vector_index)
             engine   = TradingEngine(meta_token, meta_account, meta_region) if meta_token and meta_account else None
             
             listener = TelegramListener(
@@ -934,12 +1357,17 @@ async def bot_worker(state: BotState):
                     asyncio.create_task(retry_queue_loop())
                 ]
                 
+                # Managed set for non-critical/background initialization tasks
+                bg_tasks = set()
+                
+                # Connections (Taskified to avoid blocking each other)
+                # We do NOT add these to the monitored tasks list because once they finish successfully,
+                # we don't want them to trigger a SYSTEM REBOOT.
+                bg_tasks.add(asyncio.create_task(connect_mt5()))
+                bg_tasks.add(asyncio.create_task(connect_tg()))
+                
                 # Command processor should always be there to handle UI requests
                 tasks.append(asyncio.create_task(command_processor_loop()))
-                
-                # Connections
-                await connect_mt5()
-                await connect_tg()
                 
                 # Wait for RESTART or tasks failure
                 restart_wait_task = asyncio.create_task(state.restart_event.wait())
@@ -966,56 +1394,139 @@ async def bot_worker(state: BotState):
                     try:
                         await asyncio.wait_for(engine.disconnect(), timeout=5)
                     except: pass
-
-                # Wait for task cleanup
-                if pending:
-                    await asyncio.gather(*pending, return_exceptions=True)
-                    
-                state.is_running = False
-                state.logs.append({"time": datetime.now().strftime("%H:%M:%S"), "preview": "♻️ Re-booting internal engine...", "type": "BOOT"})
-                
             else:
-                # IN SETUP MODE (incomplete config): ONLY run command processor
-                state.is_running = False
-                cp_task = asyncio.create_task(command_processor_loop())
-                rv_task = asyncio.create_task(state.restart_event.wait())
+                # Setup mode: only command processor is needed to handle onboarding
+                tasks = [asyncio.create_task(command_processor_loop())]
+                restart_wait_task = asyncio.create_task(state.restart_event.wait())
                 
-                await asyncio.wait([cp_task, rv_task], return_when=asyncio.FIRST_COMPLETED)
-                cp_task.cancel()
-                rv_task.cancel()
+                await asyncio.wait(
+                    tasks + [restart_wait_task], 
+                    return_when=asyncio.FIRST_COMPLETED
+                )
+                for t in tasks + [restart_wait_task]:
+                    if not t.done(): t.cancel()
+
         except Exception as e:
-            print(f"🚨 BOOT WORKER CRITICAL ERROR: {e}")
+            msg = f"💥 CRITICAL BOOT ERROR: {e}"
+            if not any(l['preview'] == msg for l in state.logs[-3:]):
+                state.logs.append({"time": datetime.now().strftime("%H:%M:%S"), "preview": msg, "type": "ERROR"})
+            print(f"CRITICAL BOOT ERROR: {e}")
             import traceback
             traceback.print_exc()
-            state.logs.append({"time": datetime.now().strftime("%H:%M:%S"), "preview": f"💥 CRITICAL: {str(e)}", "type": "ERROR"})
-            state.is_running = False
-            await asyncio.sleep(5) # Cooldown before loop retry
-
+            await asyncio.sleep(5) # Cooldown before retry
 
 def run_async_loop(state):
+    """Entry point for the background thread."""
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     try:
         loop.run_until_complete(bot_worker(state))
     except Exception as e:
-        print(f"Bot Thread Fatal Crash: {e}")
+        print(f"THREAD CRASH: {e}")
     finally:
-        try:
-            loop.close()
-            print("🛑 Bot event loop closed.")
-        except: pass
-        state.worker_started = False # Allow restart from UI if thread dies
+        loop.close()
 
+# --- Dashboard Fragments for Smooth Updates ---
 
-# --- Dashboard ---
-def main():
-    dashboard = Dashboard()
-    state = get_bot_state_v4()
+@st.fragment(run_every=10)
+def fragment_header(state, dashboard):
     try:
         dashboard.render_header(state)
     except Exception as e:
-        st.error(f"Error rendering header: {str(e)}")
-        st.exception(e)
+        st.error(f"Header Error: {e}")
+
+@st.fragment(run_every=5)
+def fragment_symbol_dashboard(state, dashboard, symbol_filter):
+    col_left, col_right = st.columns([1, 3.5])
+    
+    with col_left:
+        # 1. History & Logs (Consolidated)
+        def on_clear_history():
+            state.commands.append({"type": "CLEAR_HISTORY"})
+        def on_clear_logs():
+            state.commands.append({"type": "CLEAR_LOGS"})
+        
+        dashboard.render_history(state.history, on_clear_history, symbol_filter=symbol_filter)
+        st.markdown("---")
+        dashboard.render_intelligence_log(state.logs, on_clear_logs, symbol_filter=symbol_filter)
+
+    with col_right:
+        # 2. Metrics & Settings
+        m_left, m_right = st.columns([1, 1])
+        with m_left:
+            try:
+                dashboard.render_metrics(state.metrics, symbol=symbol_filter)
+            except Exception as e:
+                st.error(f"Metrics Error ({symbol_filter}): {e}")
+        with m_right:
+            if symbol_filter in state.settings:
+                dashboard.render_symbol_settings(symbol_filter, state.settings[symbol_filter])
+        
+        st.markdown("---")
+        
+        # 3. Trading Activity
+        def on_drop(queue_id):
+            state.commands.append({"type": "DROP_QUEUED_TRADE", "queue_id": queue_id})
+        def on_retry(queue_id):
+            state.commands.append({"type": "FORCE_RETRY_TRADE", "queue_id": queue_id})
+        def on_close(order_id):
+            state.commands.append({"type": "CLOSE_TRADE", "id": order_id})
+        def on_close_profitable(sym):
+            state.commands.append({"type": "CLOSE_ALL_PROFITABLE", "symbol": sym})
+        def on_set_be(ticket_id):
+            state.commands.append({"type": "SET_BE", "id": str(ticket_id)})
+        def on_restore_sl(ticket_id):
+            state.commands.append({"type": "RESTORE_SL", "id": str(ticket_id)})
+        def on_partial(ticket_id, frac):
+            state.commands.append({"type": "PARTIAL_CLOSE", "id": str(ticket_id), "fraction": frac})
+        def on_trail(ticket_id, sl):
+            state.commands.append({"type": "TRAIL_SL", "id": str(ticket_id), "sl": float(sl)})
+
+        dashboard.render_trading_activity(
+            active_trades=state.active_trades,
+            pending_queue=state.pending_queue,
+            state=state,
+            on_close_callback=on_close,
+            on_close_profitable_callback=on_close_profitable,
+            on_drop_callback=on_drop,
+            on_retry_callback=on_retry,
+            on_be_callback=on_set_be,
+            on_restore_callback=on_restore_sl,
+            on_partial_callback=on_partial,
+            on_trail_callback=on_trail,
+            symbol_filter=symbol_filter
+        )
+
+def render_dashboard_ui(state, dashboard):
+    # 1. Header (Dynamic Status) - Slower update
+    fragment_header(state, dashboard)
+    
+    # 2. Tabs (Static Layout)
+    tabs = st.tabs(["🟡 XAUUSD", "🔵 EURUSD", "⚙️ Profile"])
+    
+    # Profile Tab
+    with tabs[2]:
+        def on_save_config(new_config):
+            state.commands.append({"type": "UPDATE_CONFIG", "data": new_config})
+            st.toast("Configuration received. Core restart pending...", icon="⚙️")
+        dashboard.render_profile_tab(state, on_save_config)
+
+    # Symbol Tabs
+    for i, tab_label in enumerate(["XAUUSD", "EURUSD"]):
+        with tabs[i]:
+            fragment_symbol_dashboard(state, dashboard, tab_label)
+            st.markdown("---")
+            
+            # Manual Order (Static)
+            def on_manual_order(raw_text):
+                state.commands.append({"type": "PARSE_AND_EXECUTE", "text": raw_text})
+            dashboard.render_manual_order(on_manual_order, key_suffix=tab_label)
+
+def main():
+    dashboard = Dashboard()
+    state = get_bot_state_v3()
+    # Header now lives inside the render_dashboard_ui fragment for live updates
+    # to avoid full-page blinks when connection statuses change.
 
     # Only start the worker thread if it's not already running
     if not state.worker_started:
@@ -1023,115 +1534,16 @@ def main():
         t = threading.Thread(target=run_async_loop, args=(state,), daemon=True)
         t.start()
 
-    def on_audio_brief():
-        pass  # placeholder
-
-    # ── NAVIGATION & SIDEBAR ───
-    # Construct connection status for sidebar
-    connections = {
-        'tg': getattr(state, 'tg_connected', False),
-        'mt5': getattr(state, 'mt5_connected', False)
-    }
-    symbols = list(state.settings.keys())
-    
-    # Update active view based on sidebar selection
-    new_view = dashboard.render_sidebar(state.active_view, connections, symbols)
-    if new_view != state.active_view:
-        state.active_view = new_view
-        st.rerun()
-
     # ── ONBOARDING WIZARD ───
     if state.setup_needed:
-        # Freeze state before rendering to detect background changes accurately
-        current_step = state.setup_step
-        was_requested = state.tg_code_requested
-        is_connected_before = state.tg_connected
-        
         dashboard.render_setup_wizard(state)
-        
-        # Fast background check for state transitions
-        # We check every 500ms to keep it Snappy, but return if we need to rerun
-        for _ in range(10): # 5 seconds wait
-            time.sleep(0.5)
-            if state.setup_step != current_step or state.tg_code_requested != was_requested or state.tg_connected != is_connected_before:
-                st.rerun()
+        # Short pause then rerun to pick up background state changes without blocking the UI
+        time.sleep(1)
+        st.rerun()
         return
 
-    # ── UNIFIED VIEW ──────────────────────────────────────────────────────────
-    symbol_filter = state.active_view
-    
-    if symbol_filter == "SETTINGS":
-        def on_save_config(new_config):
-            state.commands.append({"type": "UPDATE_CONFIG", "data": new_config})
-            st.toast("Settings updated. Rebooting core...", icon="⚙️")
-        dashboard.render_profile_tab(state, on_save_config)
-    else:
-        # Main 2-column layout for the entire tab
-        col_left, col_right = st.columns([1, 3.5])
-            
-        with col_left:
-            def on_clear_history():
-                state.commands.append({"type": "CLEAR_HISTORY"})
-            def on_clear_logs():
-                state.commands.append({"type": "CLEAR_LOGS"})
-
-            # History and Logs occupy the primary left column
-            dashboard.render_history(state.history, on_clear_history, symbol_filter=symbol_filter)
-            st.markdown("---")
-            dashboard.render_intelligence_log(state.logs, on_clear_logs, symbol_filter=symbol_filter)
-
-        with col_right:
-            # Metrics and Config are grouped in the right column
-            m_left, m_right = st.columns([1, 1])
-            with m_left:
-                try:
-                    dashboard.render_metrics(state.metrics, symbol=symbol_filter)
-                except Exception as e:
-                    st.error(f"Error rendering metrics for {symbol_filter}: {str(e)}")
-            
-            with m_right:
-                if symbol_filter in state.settings:
-                    dashboard.render_symbol_settings(symbol_filter, state.settings[symbol_filter])
-                else:
-                    st.info(f"No settings for {symbol_filter}")
-
-            st.markdown("---")
-            
-            # ── Unified Trading Activity (Pending + Active) ─────────────────────
-            def on_drop(queue_id):
-                state.commands.append({"type": "DROP_QUEUED_TRADE", "queue_id": queue_id})
-            
-            def on_retry(queue_id):
-                state.commands.append({"type": "FORCE_RETRY_TRADE", "queue_id": queue_id})
-
-            def on_close(order_id):
-                state.commands.append({"type": "CLOSE_TRADE", "id": order_id})
-
-            def on_close_profitable(sym):
-                state.commands.append({"type": "CLOSE_ALL_PROFITABLE", "symbol": sym})
-
-            dashboard.render_trading_activity(
-                active_trades=state.active_trades,
-                pending_queue=state.pending_queue,
-                state=state,
-                on_close_callback=on_close,
-                on_close_profitable_callback=on_close_profitable,
-                on_drop_callback=on_drop,
-                on_retry_callback=on_retry,
-                symbol_filter=symbol_filter
-            )
-
-            st.markdown("---")
-
-            def on_manual_order(raw_text):
-                state.commands.append({"type": "PARSE_AND_EXECUTE", "text": raw_text})
-
-            dashboard.render_manual_order(on_manual_order, key_suffix=symbol_filter)
-
-    # Auto-refresh
-    time.sleep(2)
-    st.rerun()
-
+    # ── CONTENT ──────────────────────────────────────────────────────────────
+    render_dashboard_ui(state, dashboard)
 
 if __name__ == "__main__":
     main()

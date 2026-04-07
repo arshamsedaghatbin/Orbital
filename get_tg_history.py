@@ -1,5 +1,6 @@
 import asyncio
 import os
+import datetime
 from telethon import TelegramClient
 from dotenv import load_dotenv
 
@@ -8,25 +9,33 @@ load_dotenv()
 async def main():
     api_id = int(os.getenv('TELEGRAM_API_ID', '0'))
     api_hash = os.getenv('TELEGRAM_API_HASH', 'YOUR_TELEGRAM_API_HASH')
-    session = 'london_bot_session'
+    session = 'copy'
     
-    ids = [-1002047709770, 7385884580]
-    print(f"📊 Checking history for: {ids}")
+    cid = -1002047709770
+    three_months_ago = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=90)
     
-    async with TelegramClient(session, api_id, api_hash) as client:
-        await client.get_dialogs()
-        for cid in ids:
-            print(f"--- Chat: {cid} ---")
-            try:
+    print(f"📊 Fetching history for {cid} since {three_months_ago.strftime('%Y-%m-%d')}...")
+    
+    try:
+        with open('history_dump.txt', 'w', encoding='utf-8') as f:
+            async with TelegramClient(session, api_id, api_hash) as client:
+                await client.get_dialogs()
                 msg_count = 0
-                async for msg in client.iter_messages(cid, limit=5):
+                
+                async for msg in client.iter_messages(cid):
+                    if msg.date < three_months_ago:
+                        break  # Reached older than 3 months
+                    
                     if msg.text:
-                        print(f"[{msg.date}] (ID:{msg.id}) {msg.text[:60]}...")
-                        msg_count += 1
-                if msg_count == 0:
-                    print(" No text messages found in last 5.")
-            except Exception as e:
-                print(f" ❌ Error: {e}")
+                        # Optional: filter just looking for common words to keep file clean
+                        text = msg.text
+                        if any(x in text.lower() for x in ['xauusd', 'buy', 'sell', 'enter', 'entry', 'sl', 'tp', 'دوباره', 'پولبک']):
+                            f.write(f"--- [{msg.date}] ---\n{text}\n\n")
+                            msg_count += 1
+                
+                print(f"✅ Dumped {msg_count} signal formats to history_dump.txt")
+    except Exception as e:
+        print(f"❌ Error: {e}")
 
 if __name__ == '__main__':
     asyncio.run(main())

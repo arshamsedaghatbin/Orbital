@@ -30,16 +30,20 @@ Real-time message ingestion via the **Telegram MTProto API**.
 ### 📊 MetaAPI Execution Engine
 The high-speed bridge to MT5 via [MetaAPI](https://metaapi.cloud/).
 - **Asynchronous Execution**: Orders placed with millisecond precision.
-- **Live Syncing**: Keeps the dashboard and MT5 account in perfect harmony.
+- **Smart Connection Resilience**: Implements an error-thresholding heartbeat. The system maintains "Connected" status during minor network jitter, only marking disconnection after 3 consecutive failures.
+- **Persistent Signal Queue**: Innovative "Zero-Drop" logic for market errors. Signals blocked by `PRICE_ERROR`, `MARKET_CLOSED`, or `TRADE_DISABLED` stay in the queue indefinitely, retrying until terminal execution. Technical connection errors are safely capped at 3 retries.
 
 ---
 
 ## 🛡️ HACKER FEATURES
 
 ### 🛡️ News Shield
-An advanced volatility dampener. Automatically detects high-impact news events (CPI, FOMO, NFPs) and suspends signal processing to protect your capital from slippage and spreads.
+An advanced volatility dampener. Automatically detects high-impact news events (CPI, FOMO, NFPs) and suspends signal processing.
 
-### 🚀 Dynamic RR Boost (1:12)
+### 🚀 Stable UI Engine
+No more page reloads. Orbital now uses **Streamlit Fragments (@st.fragment)** for granular dashboard updates. Metrics, charts, and activity logs refresh independently, providing a smooth, flicker-free trading experience at sub-5s intervals.
+
+### 📈 Dynamic RR Boost (1:12)
 Forget 1:2. Orbital's management logic includes **Aggressive Trailing** and **Automated Break-Even (BE)** triggers. Once a trade reaches 2.0 RR, the shield engages, moving SL to entry and hunting for the 1:12 home run.
 
 ### 💎 Smart Calibration (Dynamic Risk)

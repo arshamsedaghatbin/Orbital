@@ -31,7 +31,6 @@ class TelegramListener:
 
             async def _try_resolve(cid):
                 try:
-                    # Attempt to get from internal cache first
                     entity = await self.client.get_entity(cid)
                     if hasattr(entity, 'title'):
                         return entity.title
@@ -39,14 +38,15 @@ class TelegramListener:
                         name = f"{entity.first_name} {getattr(entity, 'last_name', '') or ''}".strip()
                         return name if name else str(entity.id)
                     return str(entity.id)
-                except Exception as e:
+                except Exception:
                     return None
 
-            # First attempt
+            # Attempt 1: from Telethon's internal entity cache
             name = await _try_resolve(current_id)
             if name: return name
 
-            # If it looks like a Bot-API ID, try the raw version as well (stripping -100)
+            # Attempt 2: strip "-100" prefix for supergroups and retry
+            raw_id = None
             if str(current_id).startswith("-100"):
                 try:
                     raw_id = int(str(current_id)[4:])
@@ -54,21 +54,43 @@ class TelegramListener:
                     if name: return name
                 except: pass
 
-            # Second attempt: sync dialogs
+            # Attempt 3: full dialog sync (up to 500 chats)
             try:
                 print(f"🔄 Syncing dialogs to resolve entity: {current_id}...")
-                # ── Sync Dialogs (limit for speed) ──
-                await self.client.get_dialogs(limit=100)
+                async for dialog in self.client.iter_dialogs(limit=500):
+                    pass  # Populates the entity cache
                 name = await _try_resolve(current_id)
                 if name: return name
-                
-                # Check normalized again after sync
-                if str(current_id).startswith("-100"):
-                    raw_id = int(str(current_id)[4:])
+                if raw_id:
                     name = await _try_resolve(raw_id)
                     if name: return name
             except Exception as e:
-                print(f"❌ Dialog resolution failure for {current_id}: {e}")
+                print(f"❌ Dialog sync failure for {current_id}: {e}")
+
+            # Attempt 4: Direct low-level API call using InputChannel
+            # Works for any supergroup/channel you've joined, even if not in dialog cache
+            if str(current_id).startswith("-100") and raw_id:
+                try:
+                    from telethon.tl.functions.channels import GetChannelsRequest
+                    from telethon.tl.types import InputChannel
+                    # We need access_hash — try to get it from the peer database
+                    try:
+                        peer = await self.client.get_input_entity(current_id)
+                        result = await self.client(GetChannelsRequest([peer]))
+                        if result and result.chats:
+                            return result.chats[0].title
+                    except Exception:
+                        pass
+                    # Also try by username if it resolves
+                    try:
+                        peer = await self.client.get_input_entity(raw_id)
+                        result = await self.client(GetChannelsRequest([peer]))
+                        if result and result.chats:
+                            return result.chats[0].title
+                    except Exception:
+                        pass
+                except Exception as e:
+                    print(f"❌ Direct channel API call failed for {current_id}: {e}")
 
             return None
 

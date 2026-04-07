@@ -1,0 +1,112 @@
+{
+  "use_ai": true,
+  "reentry_keywords": [
+    "اعتبار دارد",
+    "دوباره اعتبار دارد",
+    "دوباره وارد بشید",
+    "مجدد وارد بشید",
+    "دوباره وارد شو",
+    "با سل دوباره وارد",
+    "با بای دوباره وارد",
+    "با sell دوباره وارد",
+    "با buy دوباره وارد",
+    "enter again",
+    "re-entry",
+    "reenter",
+    "open again",
+    "بریم دوباره",
+    "بزن بریم دوباره",
+    "برو دوباره",
+    "دوباره بزن"
+  ],
+  "pullback_keywords": [
+    "پولبک بالا",
+    "pullback to",
+    "take on pullback",
+    "پولبک",
+    "روی پولبک"
+  ],
+  "cancel_keywords": [
+    "کنسل",
+    "لغو",
+    "فعال نشد",
+    "باطل",
+    "حذف",
+    "بسته شود",
+    "اوردر فعال نشد",
+    "cancel",
+    "cancelled",
+    "close order",
+    "remove order",
+    "order invalid"
+  ],
+  "tp_hit_keywords": [
+    "test"
+  ],
+  "reentry_dataset": [
+    "اعتبار دارد",
+    "دوباره اعتبار دارد",
+    "دوباره وارد بشید",
+    "مجدد وارد بشید",
+    "دوباره وارد شو",
+    "با سل دوباره وارد",
+    "با بای دوباره وارد",
+    "با sell دوباره وارد",
+    "با buy دوباره وارد",
+    "enter again",
+    "re-entry",
+    "reenter",
+    "open again",
+    "دوبار وارد ش.وید",
+    "بریم دوباره",
+    "بزن بریم دوباره",
+    "برو دوباره",
+    "مجدد ورود کنیم",
+    "ورود مجدد",
+    "مجددا وارد میشیم",
+    "دوباره وارد تسدی شوشش"
+  ],
+  "pullback_dataset": [
+    "پولبک بالا",
+    "pullback to",
+    "take on pullback",
+    "پولبک",
+    "روی پولبک",
+    "صبر کنید به نقطه ورود برگرده  دوباره وارید بشوید"
+  ],
+  "cancel_dataset": [
+    "کنسل",
+    "لغو",
+    "فعال نشد",
+    "باطل",
+    "حذف",
+    "بسته شود",
+    "اوردر فعال نشد",
+    "cancel",
+    "cancelled",
+    "close order",
+    "remove order",
+    "order invalid"
+  ],
+  "tp_hit_dataset": [
+    "test"
+  ],
+  "stop_dataset": [
+    "Stop XAUUSD",
+    "Hard stop",
+    "Clear all",
+    "Stop orders",
+    "استاپ",
+    "توقف",
+    "تمام اوردرها لغو"
+  ],
+  "noise_dataset": [
+    "Hello everyone",
+    "Good morning",
+    "Market analysis",
+    "Today news",
+    "اخبار امروز",
+    "سلام به همه"
+  ],
+  "vector_threshold": 0.82
+}
