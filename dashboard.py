@@ -694,7 +694,9 @@ class Dashboard:
                 row[1].markdown(f'<div class="type-badge" style="background: {side_color}20; color: {side_color}; border: 1px solid {side_color}40; margin-top: 8px;">{q["data"].get("side")}</div>', unsafe_allow_html=True)
                 
                 # Column 3: Status
-                row[2].markdown(f'<div style="margin-top: 8px;"><span class="status-tag" style="border: 1px solid {status_color}50; color: {status_color};">{status_label}</span> <span style="font-size: 0.6rem; color: var(--text-muted);">TRIES: {q["retries"]}</span></div>', unsafe_allow_html=True)
+                risk_val = q.get('risk_usd')
+                risk_str = f'<span style="font-size: 0.6rem; color: #FFD700; font-weight: 700;">${risk_val:.0f}</span> ' if risk_val else ''
+                row[2].markdown(f'<div style="margin-top: 8px;"><span class="status-tag" style="border: 1px solid {status_color}50; color: {status_color};">{status_label}</span> {risk_str}<span style="font-size: 0.6rem; color: var(--text-muted);">TRIES: {q["retries"]}</span></div>', unsafe_allow_html=True)
                 
                 # Column 4: Levels
                 row[3].markdown(f"""
@@ -754,7 +756,9 @@ class Dashboard:
                     tag_color = "#00F5FF"
                     tag_border = "#00F5FF50"
                     
-                row[2].markdown(f"""<div style="margin-top: 8px;"><span class="status-tag" style="border: 1px solid {tag_border}; color: {tag_color};">{tag_text}</span> <b style="color: {profit_color}; font-family: 'JetBrains Mono'; font-size: 0.9rem;">${profit:,.2f}</b></div>""", unsafe_allow_html=True)
+                risk_val = t.get('risk_usd')
+                risk_str = f'<span style="font-size: 0.6rem; color: #FFD700; font-weight: 700;">${risk_val:.0f}</span> ' if risk_val else ''
+                row[2].markdown(f"""<div style="margin-top: 8px;"><span class="status-tag" style="border: 1px solid {tag_border}; color: {tag_color};">{tag_text}</span> {risk_str}<b style="color: {profit_color}; font-family: 'JetBrains Mono'; font-size: 0.9rem;">${profit:,.2f}</b></div>""", unsafe_allow_html=True)
                 
                 # Column 4: Levels
                 row[3].markdown(f"""

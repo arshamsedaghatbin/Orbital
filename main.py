@@ -710,7 +710,7 @@ async def bot_worker(state: BotState):
             error = None
             
             if engine:
-                resp = await engine.execute_trade(signal_data, sym_settings, source=clean_source, fallback_to_market=True)
+                resp = await engine.execute_trade(signal_data, sym_settings, source=clean_source, fallback_to_market=False)
                 order_id = resp.get('id')
                 error = resp.get('error')
             else:
@@ -733,7 +733,8 @@ async def bot_worker(state: BotState):
                     'source': clean_source,
                     'added_at': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                     'retries': 0,
-                    'error_type': error
+                    'error_type': error,
+                    'risk_usd': sym_settings.get('risk_usd')
                 }
                 async with (state.lock if state.lock else asyncio.Lock()):
                     state.pending_queue.append(queue_item)
@@ -795,7 +796,8 @@ async def bot_worker(state: BotState):
                                 'source': "MANUAL",
                                 'added_at': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                                 'retries': 0,
-                                'error_type': error
+                                'error_type': error,
+                                'risk_usd': sym_settings.get('risk_usd')
                             }
                             async with (state.lock if state.lock else asyncio.Lock()):
                                 state.pending_queue.append(queue_item)
@@ -1194,12 +1196,13 @@ async def bot_worker(state: BotState):
                 # Sync Active Trades with Source/Symbol Info
                 state.active_trades = [
                     {
-                        "order_id": k, 
-                        "side": v['side'], 
+                        "order_id": k,
+                        "side": v['side'],
                         "entry": v['entry'],
-                        "tp": v['tp'], 
-                        "sl": v['sl'], 
+                        "tp": v['tp'],
+                        "sl": v['sl'],
                         "lot": v['lot'],
+                        "risk_usd": v.get('risk_usd'),
                         "profit": v.get('profit', 0.0),
                         "symbol": v.get('symbol', 'XAUUSD'),
                         "source": v.get('source', 'Manual')
@@ -1238,7 +1241,7 @@ async def bot_worker(state: BotState):
                 sym_settings = state.settings.get(sym, state.settings["GLOBAL"])
                 
                 try:
-                    resp = await engine.execute_trade(item['data'], sym_settings, source=orig_source, fallback_to_market=True)
+                    resp = await engine.execute_trade(item['data'], sym_settings, source=orig_source, fallback_to_market=False)
                     
                     if resp.get('id'):
                         state.logs.append({

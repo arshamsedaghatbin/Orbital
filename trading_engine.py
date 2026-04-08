@@ -298,6 +298,14 @@ class TradingEngine:
         except:
             return None
 
+    def _recalculate_lot(self, risk_usd, distance, tick_size, tick_value, pip_value_per_lot, lot_step, min_lot):
+        if tick_size and tick_value:
+            calculated = risk_usd / ((distance / tick_size) * tick_value)
+        else:
+            calculated = risk_usd / (distance * pip_value_per_lot)
+        lot = round(round(calculated / lot_step) * lot_step, 2)
+        return max(min_lot, min(lot, 50.0))
+
     async def execute_trade(self, data, settings=None, source="Manual", fallback_to_market: bool = False):
         """
         Executes a trade based on refined AI signal data.
@@ -381,7 +389,8 @@ class TradingEngine:
                 pip_value_per_lot = 100.0
             else:
                 pip_value_per_lot = 100000.0 # Standard Forex lot
-            
+            tick_size = None
+            tick_value = None
             calculated_lot = risk_usd / (distance * pip_value_per_lot)
             lot_step = 0.01
             min_lot = 0.01
@@ -414,6 +423,11 @@ class TradingEngine:
                     else:
                         if fallback_to_market:
                             print(f"🚀 BUY entry {entry} <= market {current_market_price}. Entering at MARKET.")
+                            market_distance = abs(current_market_price - sl)
+                            if market_distance > 0:
+                                lot = self._recalculate_lot(risk_usd, market_distance, tick_size, tick_value, pip_value_per_lot, lot_step, min_lot)
+                                tp = round(current_market_price + (market_distance * rr_target), 5)
+                                print(f"♻️ [Engine] Recalculated lot for market fill at {current_market_price}: {lot} (dist: {market_distance:.5f})")
                             result = await self.connection.create_market_buy_order(symbol, lot, sl, tp)
                         else:
                             print(f"⏳ BUY entry {entry} <= market {current_market_price}. Queueing (PRICE_ERROR).")
@@ -424,6 +438,11 @@ class TradingEngine:
                     else:
                         if fallback_to_market:
                             print(f"🚀 SELL entry {entry} >= market {current_market_price}. Entering at MARKET.")
+                            market_distance = abs(current_market_price - sl)
+                            if market_distance > 0:
+                                lot = self._recalculate_lot(risk_usd, market_distance, tick_size, tick_value, pip_value_per_lot, lot_step, min_lot)
+                                tp = round(current_market_price - (market_distance * rr_target), 5)
+                                print(f"♻️ [Engine] Recalculated lot for market fill at {current_market_price}: {lot} (dist: {market_distance:.5f})")
                             result = await self.connection.create_market_sell_order(symbol, lot, sl, tp)
                         else:
                             print(f"⏳ SELL entry {entry} >= market {current_market_price}. Queueing (PRICE_ERROR).")
@@ -442,6 +461,7 @@ class TradingEngine:
                 'tps': data.get('tps', []),
                 'side': side,
                 'lot': lot,
+                'risk_usd': risk_usd,
                 'status': 'OPEN',
                 'be_hit': False,
                 'partial_hit': False,
