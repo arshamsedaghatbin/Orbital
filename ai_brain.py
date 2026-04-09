@@ -194,20 +194,37 @@ class AIBrain:
                 pass
         return None
 
-    # ── Ollama Engine (text-only, local) ─────────────────────────────────────
+    @staticmethod
+    def _normalize_text(text: str) -> str:
+        """
+        Collapse multi-line signals (one value per line) into a single compact
+        line so small local models can parse them reliably.
+
+        Example input:
+            Xauusd\n\nSellstop\n\nEntry 4731.1\n\nSl 4732.8
+        Example output:
+            Xauusd Sellstop Entry 4731.1 Sl 4732.8
+        """
+        # Remove blank lines, strip each line, join with space
+        lines = [ln.strip() for ln in text.splitlines()]
+        lines = [ln for ln in lines if ln]  # drop empty
+        return " ".join(lines)
 
     async def _ollama_parse(self, text: str, parent_context: dict | None = None) -> dict | None:
         """
         Call the local Ollama API (llama3.2) for text-only signal parsing.
         Returns a signal dict or None. Raises on connection failure.
         """
-        content_text = text
+        # Normalize multi-line format into single compact line
+        compact = self._normalize_text(text)
+
+        content_text = compact
         if parent_context:
             content_text = (
                 f"REPLIED MESSAGE CONTEXT:\n"
                 f"Symbol: {parent_context.get('symbol')}\n"
                 f"Text: {parent_context.get('text')}\n\n"
-                f"CURRENT MESSAGE:\n{text}"
+                f"CURRENT MESSAGE:\n{compact}"
             )
 
         prompt = f"{SIGNAL_SYSTEM_PROMPT}\n\nMESSAGE TO PARSE:\n{content_text}\n\nReturn ONLY a JSON object."
@@ -226,7 +243,7 @@ class AIBrain:
                 headers={"Content-Type": "application/json"},
                 method="POST"
             )
-            with urllib.request.urlopen(req, timeout=30) as resp:
+            with urllib.request.urlopen(req, timeout=90) as resp:  # 90s for slow hardware
                 body = resp.read().decode("utf-8")
                 return json.loads(body).get("response", "")
 
