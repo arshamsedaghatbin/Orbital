@@ -429,7 +429,7 @@ class Dashboard:
 
     def render_setup_wizard(self, state):
         """Ultra-premium onboarding for first-time setup."""
-        steps = ["1. Engine", "2. Telegram", "3. Gemini AI", "4. Engine Config"]
+        steps = ["1. Engine", "2. Telegram", "3. AI Config", "4. Engine Config"]
         def _pill(label, active):
             bg = "var(--primary-accent)" if active else "rgba(255,255,255,0.05)"
             col = "black" if active else "white"
@@ -541,34 +541,47 @@ class Dashboard:
                     st.error("Please enter the code.")
 
     def _render_gemini_setup(self, state):
+        gemini_val = os.getenv('GEMINI_API_KEY', '')
         st.markdown("""
         <div class='glass-card'>
-            <h3 style='color: #8E75FF;'>🧠 3. Gemini AI Brain</h3>
+            <h3 style='color: #8E75FF;'>🧠 3. AI Configuration</h3>
             <p style='font-size: 0.9rem; color: #94A3B8;'>
-                <b>How to get it:</b><br>
-                1. Visit <a href='https://aistudio.google.com/app/apikey' target='_blank'>Google AI Studio</a>.<br>
-                2. Click 'Create API key' (it's free for most regions).<br>
-                3. Copy your key and paste it below.
+                <b>Ollama (local)</b> is your primary AI engine for text signals — no key required.<br><br>
+                <b>Gemini API Key</b> is optional and unlocks two extra features:
+                <ul style='margin-top:8px;'>
+                    <li>📊 Vision / Chart image analysis</li>
+                    <li>🔄 Fallback if Ollama goes offline</li>
+                </ul>
+                To get a free key: visit <a href='https://aistudio.google.com/app/apikey' target='_blank'>Google AI Studio</a>.
             </p>
         </div>
         """, unsafe_allow_html=True)
 
         with st.form("gemini_form"):
-            api_key = st.text_input("Gemini API Key", type="password", value=os.getenv('GEMINI_API_KEY', ''))
+            api_key = st.text_input(
+                "Gemini API Key (optional)",
+                type="password",
+                value=gemini_val,
+                placeholder="Leave blank to run on Ollama only"
+            )
 
-            c1, c2 = st.columns([1, 4])
+            c1, c2, c3 = st.columns([1, 3, 2])
             with c1:
                 if st.form_submit_button("⬅️ Back", use_container_width=True):
                     state.setup_step = 2
                     st.rerun()
             with c2:
-                if st.form_submit_button("🧠 Link Brain", use_container_width=True):
+                if st.form_submit_button("🧠 Link Brain & Continue", use_container_width=True):
                     if api_key:
                         state.setup_data['GEMINI_API_KEY'] = api_key
-                        state.setup_step = 4
-                        st.rerun()
-                    else:
-                        st.error("API Key is required.")
+                    state.setup_step = 4
+                    st.rerun()
+            with c3:
+                if st.form_submit_button("⏭️ Skip (Ollama only)", use_container_width=True):
+                    # Explicitly skip — leave GEMINI_API_KEY unset
+                    state.setup_data.pop('GEMINI_API_KEY', None)
+                    state.setup_step = 4
+                    st.rerun()
 
     def _render_meta_setup(self, state):
         st.markdown("""
@@ -929,6 +942,66 @@ The EA writes `status.txt` every second. Once it's running, the Test below will 
             status_text = "CLOSED (Weekend)" if is_weekend else "OPEN"
             st.markdown(f"Status: :**{status_color}[{status_text}]**")
             st.caption("Auto-pending logic active when markets are closed.")
+
+        with col2:
+            st.markdown("#### 🧠 AI Provider")
+            import json as _json
+            _cfg_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "parsing_config.json")
+            _cfg = {}
+            if os.path.exists(_cfg_path):
+                try:
+                    with open(_cfg_path, "r", encoding="utf-8") as _f:
+                        _cfg = _json.load(_f)
+                except Exception:
+                    _cfg = {}
+
+            _has_gemini = bool(os.getenv('GEMINI_API_KEY', '').strip())
+            _current_provider = _cfg.get("ai_provider", "ollama")
+
+            if _has_gemini:
+                _provider_choice = st.radio(
+                    "Default AI Provider",
+                    options=["ollama", "gemini"],
+                    format_func=lambda x: "🦙 Ollama (local, llama3.2)" if x == "ollama" else "🌐 Gemini (cloud)",
+                    index=0 if _current_provider == "ollama" else 1,
+                    help="Ollama handles text locally. Gemini handles vision and acts as a fallback.",
+                    horizontal=True,
+                )
+            else:
+                st.radio(
+                    "Default AI Provider",
+                    options=["ollama"],
+                    format_func=lambda x: "🦙 Ollama (local, llama3.2)",
+                    index=0,
+                    disabled=True,
+                    horizontal=True,
+                )
+                st.caption("🔑 Add a Gemini API Key below to unlock the Gemini option.")
+                _provider_choice = "ollama"
+
+            if st.button("💾 Save AI Provider", use_container_width=True):
+                _cfg["ai_provider"] = _provider_choice
+                with open(_cfg_path, "w", encoding="utf-8") as _f:
+                    _json.dump(_cfg, _f, indent=2)
+                st.success(f"✅ AI provider set to: **{_provider_choice}**")
+
+            st.markdown("")
+            _gemini_status = "✅ Configured" if _has_gemini else "❌ Not set (Vision disabled)"
+            st.markdown(f"**Gemini Key:** {_gemini_status}")
+
+            with st.expander("🔑 Update Gemini API Key", expanded=not _has_gemini):
+                _new_key = st.text_input(
+                    "Gemini API Key",
+                    type="password",
+                    placeholder="AIza...",
+                    key="profile_gemini_key",
+                )
+                if st.button("💾 Save Gemini Key", use_container_width=True, key="save_profile_gemini"):
+                    if _new_key.strip():
+                        state.commands.append({"type": "UPDATE_ENV", "data": {"GEMINI_API_KEY": _new_key.strip()}})
+                        st.success("✅ Gemini key saved. Restart bot to apply.")
+                    else:
+                        st.warning("Key is empty. No changes saved.")
 
         st.markdown("---")
         st.markdown("#### 🔍 Verify New Channel")

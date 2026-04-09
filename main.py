@@ -213,15 +213,18 @@ async def bot_worker(state: BotState):
 
     # --- Setup Detection ---
     def is_setup_incomplete():
-        # Common requirements regardless of engine
-        common_keys = ['GEMINI_API_KEY', 'TELEGRAM_API_ID', 'TELEGRAM_API_HASH']
-        for k in common_keys:
+        # Telegram is always required
+        for k in ['TELEGRAM_API_ID', 'TELEGRAM_API_HASH']:
             val = os.getenv(k)
             if not val or val.startswith("YOUR_"):
                 return True
         session_name = os.getenv('TELEGRAM_SESSION_NAME', 'london_bot_session')
         if not os.path.exists(f"{session_name}.session"):
             return True
+
+        # At least one AI provider must be reachable.
+        # Gemini key is OPTIONAL — Ollama covers text-only mode.
+        # We don't gate on GEMINI_API_KEY here.
 
         # Engine-specific requirements
         engine_type = os.getenv('EXECUTION_ENGINE', 'metaapi').lower()
@@ -278,7 +281,7 @@ async def bot_worker(state: BotState):
             return ids
 
         c_ids = parse_channel_ids()
-        ai       = AIBrain(gemini_key)
+        ai       = AIBrain(gemini_key or None)  # Gemini key is optional
         # Choose execution engine based on config
         if engine_type == 'direct_mt5' and mt5_file_path:
             engine = DirectMT5Engine(mt5_file_path)
@@ -286,15 +289,18 @@ async def bot_worker(state: BotState):
             engine = TradingEngine(meta_token, meta_account, meta_region) if meta_token and meta_account else None
         listener = TelegramListener(api_id=int(tg_id), api_hash=tg_hash, channel_ids=c_ids, session_name=tg_session)
 
-        # Build Vector Intelligence Index
-        state.vector_index = VectorIndex(ai.client)
-        try:
-            build_result = await state.vector_index.build()
-            ai.set_vector_index(state.vector_index)
-            state.logs.append({"time": datetime.now().strftime("%H:%M:%S"), "preview": f"🔮 Vector Index ready: {build_result['counts']}", "type": "SYSTEM"})
-        except Exception as ve:
-            print(f"[VectorIndex] Build failed: {ve}")
-            state.logs.append({"time": datetime.now().strftime("%H:%M:%S"), "preview": f"⚠️ Vector Index unavailable: {ve}", "type": "ERROR"})
+        # Build Vector Intelligence Index (requires Gemini embeddings)
+        if ai.has_gemini:
+            state.vector_index = VectorIndex(ai.client)
+            try:
+                build_result = await state.vector_index.build()
+                ai.set_vector_index(state.vector_index)
+                state.logs.append({"time": datetime.now().strftime("%H:%M:%S"), "preview": f"🔮 Vector Index ready: {build_result['counts']}", "type": "SYSTEM"})
+            except Exception as ve:
+                print(f"[VectorIndex] Build failed: {ve}")
+                state.logs.append({"time": datetime.now().strftime("%H:%M:%S"), "preview": f"⚠️ Vector Index unavailable: {ve}", "type": "ERROR"})
+        else:
+            state.logs.append({"time": datetime.now().strftime("%H:%M:%S"), "preview": "ℹ️ Vector Index skipped (Gemini key not configured). Text→Ollama only.", "type": "SYSTEM"})
 
     # ── Helpers ────────────────────────────────────────────────────────────────
     async def process_signal(raw_text: str, source: str, msg_id: int = None, quiet: bool = False, image_bytes: bytes = None, msg_date: datetime = None, reply_to_id: int = None):
@@ -383,6 +389,19 @@ async def bot_worker(state: BotState):
                 "type": "NOISE",
                 "preview": f"[{source}] Ignored (Noise): {raw_text[:40]}..."
             })
+            return
+
+        # ── Vision-without-key guard ───────────────────────────────────────────
+        if isinstance(signal_data, dict) and signal_data.get('_gemini_key_required'):
+            state.logs.append({
+                "time": datetime.now().strftime("%H:%M:%S"),
+                "type": "WARNING",
+                "preview": "🔑 Gemini Key required for Vision. Chart analysis skipped."
+            })
+            # Surface this as a transient UI toast via session state
+            import streamlit as _st
+            if hasattr(_st, 'session_state'):
+                _st.session_state['_toast_msg'] = "🔑 Gemini Key required for Vision"
             return
 
         # ── Auto-learn: AI-parsed categorical signals → add to vector index ──
@@ -1205,10 +1224,12 @@ async def bot_worker(state: BotState):
                         updates = {
                             "TELEGRAM_API_ID":  data['TELEGRAM_API_ID'],
                             "TELEGRAM_API_HASH": data['TELEGRAM_API_HASH'],
-                            "GEMINI_API_KEY":   data['GEMINI_API_KEY'],
                             "EXECUTION_ENGINE": engine_choice,
                             "CHANNEL_IDS":      data.get('CHANNEL_IDS', '-1002047709770'),
                         }
+                        # Gemini key is optional — only write it if user provided one
+                        if data.get('GEMINI_API_KEY'):
+                            updates["GEMINI_API_KEY"] = data['GEMINI_API_KEY']
                         if engine_choice == 'direct_mt5':
                             updates["MT5_FILE_PATH"] = data.get('MT5_FILE_PATH', '')
                         else:
@@ -1218,6 +1239,15 @@ async def bot_worker(state: BotState):
 
                         state.setup_needed = False
                         state.commands.append({"type": "RESTART_BOT"})
+
+                    elif cmd['type'] == 'UPDATE_ENV':
+                        print("💾 Command: UPDATE_ENV")
+                        update_env_file(cmd.get('data', {}))
+                        state.logs.append({
+                            "time": datetime.now().strftime("%H:%M:%S"),
+                            "type": "SYSTEM",
+                            "preview": "✅ Environment updated. Restart bot to apply new keys."
+                        })
 
                 except Exception as e:
                     import traceback

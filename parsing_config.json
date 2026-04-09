@@ -1,5 +1,6 @@
 {
   "use_ai": true,
+  "ai_provider": "ollama",
   "reentry_keywords": [
     "اعتبار دارد",
     "دوباره اعتبار دارد",
