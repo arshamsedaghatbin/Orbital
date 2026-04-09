@@ -87,10 +87,13 @@
     "cancelled",
     "close order",
     "remove order",
-    "order invalid"
+    "order invalid",
+    "برداشته   شود",
+    "برش دار"
   ],
   "tp_hit_dataset": [
-    "test"
+    "test",
+    "Xauusd\n\nTp1✅\nTp2✅\nTp3✅4726.08"
   ],
   "stop_dataset": [
     "Stop XAUUSD",

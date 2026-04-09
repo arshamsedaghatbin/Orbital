@@ -43,3 +43,7 @@ london_bot.log
 *.iws
 *.iml
 *.ipr
+
+# System
+*.pid
+ollama_data/

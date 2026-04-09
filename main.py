@@ -13,6 +13,7 @@ st.set_page_config(page_title="🛰️ London Gold Bot", layout="wide", initial_
 # Modules
 from ai_brain import AIBrain
 from trading_engine import TradingEngine
+from direct_mt5_engine import DirectMT5Engine
 from telegram_listener import TelegramListener
 from dashboard import Dashboard
 from vector_index import VectorIndex
@@ -212,15 +213,27 @@ async def bot_worker(state: BotState):
 
     # --- Setup Detection ---
     def is_setup_incomplete():
-        keys = ['GEMINI_API_KEY', 'META_API_TOKEN', 'META_ACCOUNT_ID', 'TELEGRAM_API_ID', 'TELEGRAM_API_HASH']
-        for k in keys:
+        # Common requirements regardless of engine
+        common_keys = ['GEMINI_API_KEY', 'TELEGRAM_API_ID', 'TELEGRAM_API_HASH']
+        for k in common_keys:
             val = os.getenv(k)
             if not val or val.startswith("YOUR_"):
                 return True
-        # Check if session file exists
         session_name = os.getenv('TELEGRAM_SESSION_NAME', 'london_bot_session')
         if not os.path.exists(f"{session_name}.session"):
             return True
+
+        # Engine-specific requirements
+        engine_type = os.getenv('EXECUTION_ENGINE', 'metaapi').lower()
+        if engine_type == 'direct_mt5':
+            mt5_path = os.getenv('MT5_FILE_PATH', '')
+            if not mt5_path:
+                return True
+        else:
+            for k in ['META_API_TOKEN', 'META_ACCOUNT_ID']:
+                val = os.getenv(k)
+                if not val or val.startswith("YOUR_"):
+                    return True
         return False
 
     if is_setup_incomplete():
@@ -246,14 +259,14 @@ async def bot_worker(state: BotState):
         tg_id       = os.getenv('TELEGRAM_API_ID')
         tg_hash     = os.getenv('TELEGRAM_API_HASH')
         tg_session  = os.getenv('TELEGRAM_SESSION_NAME', 'london_bot_session')
-        
+        engine_type = os.getenv('EXECUTION_ENGINE', 'metaapi').lower()
+        mt5_file_path = os.getenv('MT5_FILE_PATH', '')
+
         def parse_channel_ids():
             raw = os.getenv('CHANNEL_IDS')
             if not raw:
-                # Fallback to single ID
                 sid = os.getenv('CHANNEL_ID')
                 return [int(sid)] if sid else []
-            
             ids = []
             for part in raw.split(','):
                 part = part.strip()
@@ -261,12 +274,16 @@ async def bot_worker(state: BotState):
                 try:
                     ids.append(int(part))
                 except:
-                    ids.append(part) # Strings work too (usernames)
+                    ids.append(part)
             return ids
 
         c_ids = parse_channel_ids()
         ai       = AIBrain(gemini_key)
-        engine   = TradingEngine(meta_token, meta_account, meta_region)
+        # Choose execution engine based on config
+        if engine_type == 'direct_mt5' and mt5_file_path:
+            engine = DirectMT5Engine(mt5_file_path)
+        else:
+            engine = TradingEngine(meta_token, meta_account, meta_region) if meta_token and meta_account else None
         listener = TelegramListener(api_id=int(tg_id), api_hash=tg_hash, channel_ids=c_ids, session_name=tg_session)
 
         # Build Vector Intelligence Index
@@ -346,13 +363,16 @@ async def bot_worker(state: BotState):
                 if not quiet:
                     print(f"🧠 [Context] Implicit from Active Trade -> {parent_context['symbol']}")
 
+        _t0 = time.time()
         signal_data = await ai.filter_signal(raw_text, image_bytes=image_bytes, parent_context=parent_context)
+        _parse_ms = int((time.time() - _t0) * 1000)
         entry = {
-            "msg_id": msg_id,
-            "text":   raw_text,
-            "date":   datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "source": source,
-            "signal": signal_data,
+            "msg_id":   msg_id,
+            "text":     raw_text,
+            "date":     datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "source":   source,
+            "signal":   signal_data,
+            "parse_ms": _parse_ms,
         }
         state.history.insert(0, entry)
         save_history(state.history)
@@ -388,6 +408,38 @@ async def bot_worker(state: BotState):
 
         sym    = signal_data.get('symbol', 'XAUUSD')
         sig_type = signal_data.get('type', 'NEW').upper()
+
+        # ── Global STOP guard ─────────────────────────────────────────────────
+        # REENTRY and PULLBACK inherit old trade data — block them if the last
+        # action for this symbol was a hard_stop.
+        # NEW signals with explicit entry+SL are intentional overrides from the
+        # signal provider and always clear the stop implicitly.
+        _block_types = {'REENTRY', 'PULLBACK'}
+        if sig_type == 'NEW' and not (signal_data.get('entry') and signal_data.get('sl')):
+            _block_types.add('NEW')  # NEW without prices is ambiguous — block it too
+
+        if sig_type in _block_types:
+            _stopped = False
+            for _h in state.history[1:]:  # [0] is the current entry just inserted
+                _h_sym = _h.get('signal', {}).get('symbol')
+                if _h_sym != sym:
+                    continue
+                if _h.get('hard_stop'):
+                    _stopped = True
+                    break
+                # A successfully placed order clears the stop for this symbol
+                if _h.get('order_id') and _h['order_id'] not in ('CANCELLED_Q', 'CANCELLED_MT5'):
+                    break
+            if _stopped:
+                state.logs.append({
+                    "time": datetime.now().strftime("%H:%M:%S"),
+                    "type": "NOISE",
+                    "preview": f"🛑 [{source}] {sym} is under Global STOP — new entry BLOCKED."
+                })
+                entry['blocked_by_stop'] = True
+                save_history(state.history)
+                return
+        # ─────────────────────────────────────────────────────────────────────
 
         if sig_type == 'UPDATE':
             # ── UPDATE: first check pending queue, then fallback to live positions ──
@@ -716,6 +768,8 @@ async def bot_worker(state: BotState):
             else:
                 error = "DISCONNECTED"
 
+            _total_ms = int((time.time() - _t0) * 1000)
+
             if order_id:
                 state.logs.append({
                     "time": datetime.now().strftime("%H:%M:%S"),
@@ -723,6 +777,7 @@ async def bot_worker(state: BotState):
                     "preview": f"✅ [{source}] Order placed: {order_id}"
                 })
                 entry['order_id'] = order_id
+                entry['total_ms'] = _total_ms
                 save_history(state.history)
             elif error in ["DISCONNECTED", "PRICE_ERROR", "MARKET_CLOSED", "TRADE_DISABLED", "INVALID_STOPS"]:
                 # Added to Pending Queue for retry/visibility
@@ -739,7 +794,7 @@ async def bot_worker(state: BotState):
                 async with (state.lock if state.lock else asyncio.Lock()):
                     state.pending_queue.append(queue_item)
                     save_pending_queue(state.pending_queue)
-                
+
                 state.logs.append({
                     "time": datetime.now().strftime("%H:%M:%S"),
                     "type": "SIGNAL",
@@ -747,6 +802,7 @@ async def bot_worker(state: BotState):
                 })
                 entry['queued'] = True
                 entry['error'] = error
+                entry['total_ms'] = _total_ms
                 save_history(state.history)
             else:
                 state.logs.append({
@@ -755,6 +811,7 @@ async def bot_worker(state: BotState):
                     "preview": f"❌ [{source}] Execution failed: {error or 'Check MT5 connection'}"
                 })
                 entry['error'] = error or "EXECUTION_FAILED"
+                entry['total_ms'] = _total_ms
                 save_history(state.history)
 
     # ── Command Processor ──────────────────────────────────────────────────────
@@ -940,8 +997,9 @@ async def bot_worker(state: BotState):
                             
                             # 3. Clear relevant environment variables in memory
                             reset_keys = [
-                                'GEMINI_API_KEY', 'META_API_TOKEN', 'META_ACCOUNT_ID', 
-                                'TELEGRAM_API_ID', 'TELEGRAM_API_HASH', 'CHANNEL_ID', 'CHANNEL_IDS', 'PHONE'
+                                'GEMINI_API_KEY', 'META_API_TOKEN', 'META_ACCOUNT_ID',
+                                'TELEGRAM_API_ID', 'TELEGRAM_API_HASH', 'CHANNEL_ID', 'CHANNEL_IDS', 'PHONE',
+                                'EXECUTION_ENGINE', 'MT5_FILE_PATH',
                             ]
                             for k in reset_keys:
                                 if k in os.environ:
@@ -1006,6 +1064,27 @@ async def bot_worker(state: BotState):
                             asyncio.create_task(connect_mt5())
                         else:
                             state.logs.append({"time": datetime.now().strftime("%H:%M:%S"), "preview": "❌ Engine not initialized.", "type": "ERROR"})
+
+                    elif cmd['type'] == 'TEST_DIRECT_MT5':
+                        path = cmd.get('path', '')
+                        state.logs.append({"time": datetime.now().strftime("%H:%M:%S"), "preview": f"🧪 Testing Direct MT5 connection at {path}...", "type": "SYSTEM"})
+                        try:
+                            test_file = os.path.join(path, "bot_test.txt")
+                            with open(test_file, 'w') as f:
+                                f.write('{"test": "ok"}')
+                            os.remove(test_file)
+                            status_file = os.path.join(path, "status.txt")
+                            if os.path.exists(status_file):
+                                with open(status_file, 'r') as f:
+                                    data_test = json.loads(f.read())
+                                bal = data_test.get('balance', 'N/A')
+                                state.logs.append({"time": datetime.now().strftime("%H:%M:%S"), "preview": f"✅ Direct MT5 OK — Balance: {bal}", "type": "SYSTEM"})
+                                state.mt5_connected = True
+                            else:
+                                state.logs.append({"time": datetime.now().strftime("%H:%M:%S"), "preview": "⚠️ Write OK but status.txt missing. Is the EA running?", "type": "ERROR"})
+                        except Exception as e:
+                            state.logs.append({"time": datetime.now().strftime("%H:%M:%S"), "preview": f"❌ Direct MT5 Test Failed: {e}", "type": "ERROR"})
+                            state.mt5_connected = False
 
                     elif cmd['type'] == 'VERIFY_CHANNEL':
                         channel_id = cmd['data'].get('id')
@@ -1111,8 +1190,8 @@ async def bot_worker(state: BotState):
                                 os.rename("auth_session.session", "london_bot_session.session")
                                 print("📂 Session file promoted to main.")
 
-                            state.logs.append({"time": datetime.now().strftime("%H:%M:%S"), "type": "SYSTEM", "preview": "✅ Telegram Authorized! Step 1 Complete."})
-                            state.setup_step = 2 
+                            state.logs.append({"time": datetime.now().strftime("%H:%M:%S"), "type": "SYSTEM", "preview": "✅ Telegram Authorized! Step 2 Complete."})
+                            state.setup_step = 3
                             state.tg_code_requested = False
                             print(f"⏩ Transitioning to step {state.setup_step}")
                         except Exception as e:
@@ -1121,20 +1200,23 @@ async def bot_worker(state: BotState):
 
                     elif cmd['type'] == 'FINISH_SETUP':
                         print("💾 Command: FINISH_SETUP")
-                        # Use the standardized helper
                         data = cmd['data']
+                        engine_choice = data.get('EXECUTION_ENGINE', 'metaapi')
                         updates = {
-                            "TELEGRAM_API_ID": data['TELEGRAM_API_ID'],
+                            "TELEGRAM_API_ID":  data['TELEGRAM_API_ID'],
                             "TELEGRAM_API_HASH": data['TELEGRAM_API_HASH'],
-                            "GEMINI_API_KEY": data['GEMINI_API_KEY'],
-                            "META_API_TOKEN": data['META_API_TOKEN'],
-                            "META_ACCOUNT_ID": data['META_ACCOUNT_ID'],
-                            "CHANNEL_IDS": data.get('CHANNEL_IDS', '-1002047709770'),
+                            "GEMINI_API_KEY":   data['GEMINI_API_KEY'],
+                            "EXECUTION_ENGINE": engine_choice,
+                            "CHANNEL_IDS":      data.get('CHANNEL_IDS', '-1002047709770'),
                         }
+                        if engine_choice == 'direct_mt5':
+                            updates["MT5_FILE_PATH"] = data.get('MT5_FILE_PATH', '')
+                        else:
+                            updates["META_API_TOKEN"]  = data.get('META_API_TOKEN', '')
+                            updates["META_ACCOUNT_ID"] = data.get('META_ACCOUNT_ID', '')
                         update_env_file(updates)
-                        
+
                         state.setup_needed = False
-                        # The main thread reruns automatically every 2s, so we just signal finish.
                         state.commands.append({"type": "RESTART_BOT"})
 
                 except Exception as e:
@@ -1318,13 +1400,14 @@ async def bot_worker(state: BotState):
         if not engine:
             print("❌ Cannot connect MT5: Engine not initialized.")
             return
-        state.logs.append({"time": datetime.now().strftime("%H:%M:%S"), "preview": "🔗 Connecting to MetaTrader...", "type": "SYSTEM"})
+        engine_label = "Direct MT5" if isinstance(engine, DirectMT5Engine) else "MetaAPI"
+        state.logs.append({"time": datetime.now().strftime("%H:%M:%S"), "preview": f"🔗 Connecting to {engine_label}...", "type": "SYSTEM"})
         mt5_success = await engine.connect()
         if mt5_success:
-            state.logs.append({"time": datetime.now().strftime("%H:%M:%S"), "preview": "✅ MT5 Connected.", "type": "SYSTEM"})
+            state.logs.append({"time": datetime.now().strftime("%H:%M:%S"), "preview": f"✅ {engine_label} Connected.", "type": "SYSTEM"})
             state.mt5_connected = True
         else:
-            state.logs.append({"time": datetime.now().strftime("%H:%M:%S"), "preview": "⚠️ MT5 Connection Failed.", "type": "ERROR"})
+            state.logs.append({"time": datetime.now().strftime("%H:%M:%S"), "preview": f"⚠️ {engine_label} Connection Failed.", "type": "ERROR"})
             state.mt5_connected = False
 
     async def connect_tg():
@@ -1390,15 +1473,17 @@ async def bot_worker(state: BotState):
             # Reload .env for fresh config every reboot
             from dotenv import load_dotenv
             load_dotenv(override=True)
-        
-            gemini_key  = os.getenv('GEMINI_API_KEY')
-            meta_token  = os.getenv('META_API_TOKEN')
-            meta_account= os.getenv('META_ACCOUNT_ID')
-            meta_region = os.getenv('META_REGION', 'london')
-            tg_id       = os.getenv('TELEGRAM_API_ID')
-            tg_hash     = os.getenv('TELEGRAM_API_HASH')
-            tg_session  = os.getenv('TELEGRAM_SESSION_NAME', 'london_bot_session')
-            
+
+            gemini_key    = os.getenv('GEMINI_API_KEY')
+            meta_token    = os.getenv('META_API_TOKEN')
+            meta_account  = os.getenv('META_ACCOUNT_ID')
+            meta_region   = os.getenv('META_REGION', 'london')
+            tg_id         = os.getenv('TELEGRAM_API_ID')
+            tg_hash       = os.getenv('TELEGRAM_API_HASH')
+            tg_session    = os.getenv('TELEGRAM_SESSION_NAME', 'london_bot_session')
+            engine_type   = os.getenv('EXECUTION_ENGINE', 'metaapi').lower()
+            mt5_file_path = os.getenv('MT5_FILE_PATH', '')
+
             # Get list of channels from env
             chan_ids_raw = os.getenv('CHANNEL_IDS', '').strip()
             chan_id_raw = os.getenv('CHANNEL_ID', '').strip()
@@ -1406,16 +1491,21 @@ async def bot_worker(state: BotState):
             channel_ids = [c.strip() for c in chan_env.split(',') if c.strip()]
 
             # Init Components
-            ai       = AIBrain(gemini_key) if gemini_key else None
+            ai = AIBrain(gemini_key) if gemini_key else None
             if ai and hasattr(state, 'vector_index') and state.vector_index:
                 ai.set_vector_index(state.vector_index)
-            engine   = TradingEngine(meta_token, meta_account, meta_region) if meta_token and meta_account else None
-            
+
+            # Choose execution engine based on saved preference
+            if engine_type == 'direct_mt5' and mt5_file_path:
+                engine = DirectMT5Engine(mt5_file_path)
+            else:
+                engine = TradingEngine(meta_token, meta_account, meta_region) if meta_token and meta_account else None
+
             listener = TelegramListener(
-                api_id=int(tg_id), 
-                api_hash=tg_hash, 
-                channel_ids=channel_ids, 
-                session_name=tg_session, 
+                api_id=int(tg_id),
+                api_hash=tg_hash,
+                channel_ids=channel_ids,
+                session_name=tg_session,
                 on_msg_callback=on_new_message
             ) if tg_id and tg_hash else None
 

@@ -1,0 +1,18 @@
+services:
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ollama_service
+    ports:
+      - "11434:11434"
+    volumes:
+      - ./ollama_data:/root/.ollama
+    # روی مک، داکر به طور خودکار از منابع سیستم استفاده می‌کند، 
+    # اما برای سرعت بهتر مطمئن شوید Docker Desktop شما به روز است.
+
+  app:
+    build: .
+    container_name: signal_processor
+    depends_on:
+      - ollama
+    environment:
+      - OLLAMA_HOST=http://ollama:11434

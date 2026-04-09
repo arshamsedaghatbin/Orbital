@@ -429,14 +429,19 @@ class Dashboard:
 
     def render_setup_wizard(self, state):
         """Ultra-premium onboarding for first-time setup."""
+        steps = ["1. Engine", "2. Telegram", "3. Gemini AI", "4. Engine Config"]
+        def _pill(label, active):
+            bg = "var(--primary-accent)" if active else "rgba(255,255,255,0.05)"
+            col = "black" if active else "white"
+            return f"<div style='padding: 10px 20px; border-radius: 30px; background: {bg}; color: {col};'>{label}</div>"
+
+        pills_html = "".join(_pill(s, i + 1 == state.setup_step) for i, s in enumerate(steps))
         st.markdown(f"""
-        <div class='glass-card' style='max-width: 800px; margin: 40px auto; text-align: center; border-color: var(--primary-accent);'>
+        <div class='glass-card' style='max-width: 860px; margin: 40px auto; text-align: center; border-color: var(--primary-accent);'>
             <h1 style='color: var(--primary-accent); font-size: 2.5rem; margin-bottom: 10px;'>🛸 System Initialization</h1>
             <p style='color: var(--text-muted); font-size: 1.1rem;'>Welcome, Commander. Let's calibrate your London Gold Bot.</p>
-            <div style='display: flex; justify-content: center; gap: 20px; margin: 30px 0;'>
-                <div style='padding: 10px 20px; border-radius: 30px; background: { "var(--primary-accent)" if state.setup_step == 1 else "rgba(255,255,255,0.05)" }; color: { "black" if state.setup_step == 1 else "white" };'>1. Telegram</div>
-                <div style='padding: 10px 20px; border-radius: 30px; background: { "var(--primary-accent)" if state.setup_step == 2 else "rgba(255,255,255,0.05)" }; color: { "black" if state.setup_step == 2 else "white" };'>2. Gemini AI</div>
-                <div style='padding: 10px 20px; border-radius: 30px; background: { "var(--primary-accent)" if state.setup_step == 3 else "rgba(255,255,255,0.05)" }; color: { "black" if state.setup_step == 3 else "white" };'>3. Trade Engine</div>
+            <div style='display: flex; justify-content: center; gap: 12px; margin: 30px 0; flex-wrap: wrap;'>
+                {pills_html}
             </div>
         </div>
         """, unsafe_allow_html=True)
@@ -444,23 +449,53 @@ class Dashboard:
         cols = st.columns([1, 2, 1])
         with cols[1]:
             if state.setup_step == 1:
-                self._render_tg_setup(state)
+                self._render_engine_choice(state)
             elif state.setup_step == 2:
-                self._render_gemini_setup(state)
+                self._render_tg_setup(state)
             elif state.setup_step == 3:
-                self._render_meta_setup(state)
+                self._render_gemini_setup(state)
+            elif state.setup_step == 4:
+                engine_choice = state.setup_data.get('EXECUTION_ENGINE', 'metaapi')
+                if engine_choice == 'direct_mt5':
+                    self._render_direct_mt5_setup(state)
+                else:
+                    self._render_meta_setup(state)
+
+    def _render_engine_choice(self, state):
+        st.markdown("""
+        <div class='glass-card'>
+            <h3 style='color: var(--primary-accent);'>⚙️ 1. Choose Execution Engine</h3>
+            <p style='font-size: 0.9rem; color: #94A3B8;'>
+                Select how orders will be sent to MetaTrader 5.<br><br>
+                <b>MetaAPI Cloud</b> — Connects via MetaAPI's cloud relay. Requires internet, MetaAPI account, and broker linkage.<br>
+                <b>Direct MT5 (File Bridge)</b> — Writes orders directly to MT5's local file system via a Socket EA. Works fully offline. Recommended for local setups on Mac.
+            </p>
+        </div>
+        """, unsafe_allow_html=True)
+
+        choice = st.radio(
+            "Engine",
+            options=["metaapi", "direct_mt5"],
+            format_func=lambda x: "📡 MetaAPI Cloud" if x == "metaapi" else "💾 Direct MT5 (File Bridge)",
+            index=0 if state.setup_data.get('EXECUTION_ENGINE', 'metaapi') == 'metaapi' else 1,
+            label_visibility="collapsed",
+        )
+        if st.button("Next ➡️", use_container_width=True, type="primary"):
+            state.setup_data['EXECUTION_ENGINE'] = choice
+            state.setup_step = 2
+            st.rerun()
 
     def _render_tg_setup(self, state):
         if state.telegram_connected:
             st.success("✅ Telegram Connected")
             if st.button("Next ➡️", use_container_width=True, type="primary"):
-                state.setup_step = 2
+                state.setup_step = 3
                 st.rerun()
             return
 
         st.markdown("""
         <div class='glass-card'>
-            <h3 style='color: #0088CC;'>📡 1. Telegram Connectivity</h3>
+            <h3 style='color: #0088CC;'>📡 2. Telegram Connectivity</h3>
             <p style='font-size: 0.9rem; color: #94A3B8;'>
                 <b>How to get these:</b><br>
                 1. Log in at <a href='https://my.telegram.org' target='_blank'>my.telegram.org</a>.<br>
@@ -474,8 +509,14 @@ class Dashboard:
             api_id = st.text_input("API ID", value=os.getenv('TELEGRAM_API_ID', ''), help="From my.telegram.org")
             api_hash = st.text_input("API HASH", value=os.getenv('TELEGRAM_API_HASH', ''), help="From my.telegram.org")
             phone = st.text_input("Phone Number", placeholder="+1234567890", help="Include country code (+)")
-            
-            submit = st.form_submit_button("🛰️ Initialize Connection", use_container_width=True)
+
+            fb1, fb2 = st.columns([1, 4])
+            with fb1:
+                if st.form_submit_button("⬅️ Back", use_container_width=True):
+                    state.setup_step = 1
+                    st.rerun()
+            with fb2:
+                submit = st.form_submit_button("🛰️ Initialize Connection", use_container_width=True)
             if submit:
                 if not api_id or not api_hash or not phone:
                     st.error("Please fill all fields.")
@@ -483,7 +524,6 @@ class Dashboard:
                     state.setup_data['TELEGRAM_API_ID'] = api_id
                     state.setup_data['TELEGRAM_API_HASH'] = api_hash
                     state.setup_data['PHONE'] = phone
-                    # Trigger code request
                     state.tg_code_requested = True
                     state.commands.append({"type": "REQUEST_TG_CODE", "data": {"api_id": api_id, "api_hash": api_hash, "phone": phone}})
                     st.info("🛰️ Initializing session... Please check Telegram.")
@@ -503,7 +543,7 @@ class Dashboard:
     def _render_gemini_setup(self, state):
         st.markdown("""
         <div class='glass-card'>
-            <h3 style='color: #8E75FF;'>🧠 2. Gemini AI Brain</h3>
+            <h3 style='color: #8E75FF;'>🧠 3. Gemini AI Brain</h3>
             <p style='font-size: 0.9rem; color: #94A3B8;'>
                 <b>How to get it:</b><br>
                 1. Visit <a href='https://aistudio.google.com/app/apikey' target='_blank'>Google AI Studio</a>.<br>
@@ -512,20 +552,20 @@ class Dashboard:
             </p>
         </div>
         """, unsafe_allow_html=True)
-        
+
         with st.form("gemini_form"):
             api_key = st.text_input("Gemini API Key", type="password", value=os.getenv('GEMINI_API_KEY', ''))
-            
+
             c1, c2 = st.columns([1, 4])
             with c1:
                 if st.form_submit_button("⬅️ Back", use_container_width=True):
-                    state.setup_step = 1
+                    state.setup_step = 2
                     st.rerun()
             with c2:
                 if st.form_submit_button("🧠 Link Brain", use_container_width=True):
                     if api_key:
                         state.setup_data['GEMINI_API_KEY'] = api_key
-                        state.setup_step = 3
+                        state.setup_step = 4
                         st.rerun()
                     else:
                         st.error("API Key is required.")
@@ -533,26 +573,25 @@ class Dashboard:
     def _render_meta_setup(self, state):
         st.markdown("""
         <div class='glass-card'>
-            <h3 style='color: var(--primary-accent);'>📊 3. MetaApi Execution Engine</h3>
+            <h3 style='color: var(--primary-accent);'>📊 4. MetaApi Execution Engine</h3>
             <p style='font-size: 0.9rem; color: #94A3B8;'>
                 <b>How to get these:</b><br>
                 1. Log in to <a href='https://app.metaapi.cloud' target='_blank'>MetaApi Dashboard</a>.<br>
                 2. Copy your <b>API Token</b> from the top of the dashboard.<br>
-                3. Connected your MT5 account to MetaApi to get your <b>Account ID</b>.
+                3. Connect your MT5 account to MetaApi to get your <b>Account ID</b>.
             </p>
         </div>
         """, unsafe_allow_html=True)
-        
+
         with st.form("meta_form"):
             token = st.text_input("MetaApi Token", type="password", value=os.getenv('META_API_TOKEN', ''))
             account_id = st.text_input("Meta Account ID", value=os.getenv('META_ACCOUNT_ID', ''))
-            # Support multiple channels
-            channel_ids = st.text_input("Source Channel IDs (Comma separated)", value=os.getenv('CHANNEL_IDS', '-1002047709770'), help="The channels to monitor (e.g., -1002047709770, -1003749453819)")
-            
+            channel_ids = st.text_input("Source Channel IDs (Comma separated)", value=os.getenv('CHANNEL_IDS', '-1002047709770'), help="e.g., -1002047709770, -1003749453819")
+
             c1, c2 = st.columns([1, 4])
             with c1:
                 if st.form_submit_button("⬅️ Back", use_container_width=True):
-                    state.setup_step = 2
+                    state.setup_step = 3
                     st.rerun()
             with c2:
                 if st.form_submit_button("🏁 Complete Calibration", use_container_width=True):
@@ -560,12 +599,306 @@ class Dashboard:
                         state.setup_data['META_API_TOKEN'] = token
                         state.setup_data['META_ACCOUNT_ID'] = account_id
                         state.setup_data['CHANNEL_IDS'] = channel_ids
-                        
                         state.commands.append({"type": "FINISH_SETUP", "data": state.setup_data})
                         st.success("Saving configuration and launching...")
                         st.rerun()
                     else:
                         st.error("Token and Account ID are required.")
+
+    # ── EA source code (shown in wizard and in profile tab) ───────────────────
+    _EA_CODE = r"""#include <Trade\Trade.mqh>
+
+CTrade trade;
+string orderFile = "order.txt";
+string statusFile = "status.txt";
+
+int OnInit() {
+   EventSetTimer(1);
+   Print("Socket EA started");
+   return INIT_SUCCEEDED;
+}
+
+void OnDeinit(const int reason) {
+   EventKillTimer();
+}
+
+void OnTimer() {
+   WriteStatus();
+
+   if(!FileIsExist(orderFile)) return;
+
+   int file = FileOpen(orderFile, FILE_READ|FILE_TXT|FILE_ANSI);
+   if(file == INVALID_HANDLE) {
+      Print("Cannot open file");
+      return;
+   }
+
+   string data = FileReadString(file);
+   FileClose(file);
+   FileDelete(orderFile);
+
+   Print("Order received: ", data);
+   if(StringLen(data) == 0) return;
+
+   string symbol = GetValue(data, "symbol");
+   string action = GetValue(data, "action");
+   double volume = StringToDouble(GetValue(data, "volume"));
+   double sl     = StringToDouble(GetValue(data, "sl"));
+   double tp     = StringToDouble(GetValue(data, "tp"));
+   double price  = StringToDouble(GetValue(data, "price"));
+   ulong  ticket = (ulong)StringToInteger(GetValue(data, "ticket"));
+
+   bool result = false;
+
+   if(action == "BUY")
+      result = trade.Buy(volume, symbol, 0, sl, tp);
+   else if(action == "SELL")
+      result = trade.Sell(volume, symbol, 0, sl, tp);
+   else if(action == "BUY_STOP")
+      result = trade.BuyStop(volume, price, symbol, sl, tp);
+   else if(action == "SELL_STOP")
+      result = trade.SellStop(volume, price, symbol, sl, tp);
+   else if(action == "BUY_LIMIT")
+      result = trade.BuyLimit(volume, price, symbol, sl, tp);
+   else if(action == "SELL_LIMIT")
+      result = trade.SellLimit(volume, price, symbol, sl, tp);
+   else if(action == "CLOSE") {
+      if(ticket > 0)
+         result = trade.PositionClose(ticket);
+      else
+         result = trade.PositionClose(symbol);
+   }
+   else if(action == "DELETE") {
+      if(ticket > 0)
+         result = trade.OrderDelete(ticket);
+      else {
+         // No ticket — cancel ALL pending orders on this symbol
+         int total = OrdersTotal();
+         result = true;
+         for(int i = total - 1; i >= 0; i--) {
+            ulong ord_ticket = OrderGetTicket(i);
+            if(ord_ticket == 0) continue;
+            if(symbol != "" && OrderGetString(ORDER_SYMBOL) != symbol) continue;
+            if(!trade.OrderDelete(ord_ticket)) result = false;
+         }
+      }
+   }
+   else if(action == "MODIFY_POSITION") {
+      result = trade.PositionModify(ticket, sl, tp);
+   }
+   else if(action == "MODIFY_ORDER") {
+      if(OrderSelect(ticket)) {
+         ENUM_ORDER_TYPE_TIME ott = (ENUM_ORDER_TYPE_TIME)OrderGetInteger(ORDER_TYPE_TIME);
+         result = trade.OrderModify(ticket, price, sl, tp, ott, 0);
+      }
+   }
+   else if(action == "BREAKEVEN") {
+      if(PositionSelectByTicket(ticket)) {
+         double open_price = PositionGetDouble(POSITION_PRICE_OPEN);
+         result = trade.PositionModify(ticket, open_price, PositionGetDouble(POSITION_TP));
+      }
+   }
+   else if(action == "PARTIAL_CLOSE")
+      result = trade.PositionClosePartial(ticket, volume);
+
+   Print("Result: ", result, " Error: ", GetLastError());
+}
+
+void WriteStatus() {
+   int file = FileOpen(statusFile, FILE_WRITE|FILE_TXT|FILE_ANSI);
+   if(file == INVALID_HANDLE) return;
+
+   string json = "{";
+   json += "\"balance\": \""     + DoubleToString(AccountInfoDouble(ACCOUNT_BALANCE),     2) + "\",";
+   json += "\"equity\": \""      + DoubleToString(AccountInfoDouble(ACCOUNT_EQUITY),      2) + "\",";
+   json += "\"margin\": \""      + DoubleToString(AccountInfoDouble(ACCOUNT_MARGIN),      2) + "\",";
+   json += "\"free_margin\": \"" + DoubleToString(AccountInfoDouble(ACCOUNT_MARGIN_FREE), 2) + "\",";
+   json += "\"positions\": [";
+
+   int total = PositionsTotal();
+   for(int i = 0; i < total; i++) {
+      ulong t = PositionGetTicket(i);
+      if(t > 0) {
+         if(i > 0) json += ",";
+         json += "{";
+         json += "\"ticket\": \""        + IntegerToString(t) + "\",";
+         json += "\"symbol\": \""        + PositionGetString(POSITION_SYMBOL) + "\",";
+         json += "\"type\": \""          + (PositionGetInteger(POSITION_TYPE) == 0 ? "BUY" : "SELL") + "\",";
+         json += "\"volume\": \""        + DoubleToString(PositionGetDouble(POSITION_VOLUME),       2) + "\",";
+         json += "\"open_price\": \""    + DoubleToString(PositionGetDouble(POSITION_PRICE_OPEN),   5) + "\",";
+         json += "\"current_price\": \"" + DoubleToString(PositionGetDouble(POSITION_PRICE_CURRENT),5) + "\",";
+         json += "\"sl\": \""            + DoubleToString(PositionGetDouble(POSITION_SL),           5) + "\",";
+         json += "\"tp\": \""            + DoubleToString(PositionGetDouble(POSITION_TP),           5) + "\",";
+         json += "\"profit\": \""        + DoubleToString(PositionGetDouble(POSITION_PROFIT),       2) + "\"";
+         json += "}";
+      }
+   }
+
+   json += "],\"orders\": [";
+
+   int total_orders = OrdersTotal();
+   for(int i = 0; i < total_orders; i++) {
+      ulong t = OrderGetTicket(i);
+      if(t > 0) {
+         if(i > 0) json += ",";
+         json += "{";
+         json += "\"ticket\": \"" + IntegerToString(t) + "\",";
+         json += "\"symbol\": \"" + OrderGetString(ORDER_SYMBOL) + "\",";
+         json += "\"type\": \""   + EnumToString((ENUM_ORDER_TYPE)OrderGetInteger(ORDER_TYPE)) + "\",";
+         json += "\"volume\": \"" + DoubleToString(OrderGetDouble(ORDER_VOLUME_CURRENT), 2) + "\",";
+         json += "\"price\": \""  + DoubleToString(OrderGetDouble(ORDER_PRICE_OPEN),    5) + "\",";
+         json += "\"sl\": \""     + DoubleToString(OrderGetDouble(ORDER_SL),            5) + "\",";
+         json += "\"tp\": \""     + DoubleToString(OrderGetDouble(ORDER_TP),            5) + "\"";
+         json += "}";
+      }
+   }
+
+   // Collect unique symbols for bid/ask reporting
+   string syms[];
+   int sym_count = 0;
+   for(int i = 0; i < PositionsTotal(); i++) {
+      ulong t = PositionGetTicket(i);
+      if(t > 0) {
+         string sym = PositionGetString(POSITION_SYMBOL);
+         bool found = false;
+         for(int j = 0; j < sym_count; j++) if(syms[j] == sym) { found = true; break; }
+         if(!found) { ArrayResize(syms, sym_count + 1); syms[sym_count++] = sym; }
+      }
+   }
+   for(int i = 0; i < OrdersTotal(); i++) {
+      ulong t = OrderGetTicket(i);
+      if(t > 0) {
+         string sym = OrderGetString(ORDER_SYMBOL);
+         bool found = false;
+         for(int j = 0; j < sym_count; j++) if(syms[j] == sym) { found = true; break; }
+         if(!found) { ArrayResize(syms, sym_count + 1); syms[sym_count++] = sym; }
+      }
+   }
+
+   json += "],\"prices\": {";
+   for(int i = 0; i < sym_count; i++) {
+      if(i > 0) json += ",";
+      json += "\"" + syms[i] + "\": {";
+      json += "\"bid\": \"" + DoubleToString(SymbolInfoDouble(syms[i], SYMBOL_BID), 5) + "\",";
+      json += "\"ask\": \"" + DoubleToString(SymbolInfoDouble(syms[i], SYMBOL_ASK), 5) + "\"";
+      json += "}";
+   }
+   json += "}}";
+
+   FileWriteString(file, json);
+   FileClose(file);
+}
+
+void OnTick() {}
+
+string GetValue(string json, string key) {
+   string search1 = "\"" + key + "\": \"";
+   string search2 = "\"" + key + "\":\"";
+
+   int start = StringFind(json, search1);
+   if(start >= 0)
+      start += StringLen(search1);
+   else {
+      start = StringFind(json, search2);
+      if(start >= 0)
+         start += StringLen(search2);
+      else return "";
+   }
+
+   int end = StringFind(json, "\"", start);
+   return StringSubstr(json, start, end - start);
+}
+"""
+
+    def _render_direct_mt5_setup(self, state):
+        st.markdown("""
+        <div class='glass-card'>
+            <h3 style='color: #00FF99;'>💾 4. Direct MT5 — File Bridge Setup</h3>
+            <p style='font-size: 0.9rem; color: #94A3B8;'>
+                Three quick steps to connect your local MetaTrader 5 installation.
+            </p>
+        </div>
+        """, unsafe_allow_html=True)
+
+        with st.expander("📁 Step 1 — Find your MT5 Files path", expanded=True):
+            st.markdown("""
+**On Mac, open Terminal and run:**
+```bash
+ls ~/Library/Application\\ Support/ | grep metaquotes
+```
+You will see a folder like `net.metaquotes.wine.metatrader5`
+*(make sure it's **metatrader5**, not metatrader4)*
+
+Your full Files path is:
+```
+~/Library/Application Support/net.metaquotes.wine.metatrader5/drive_c/Program Files/MetaTrader 5/MQL5/Files
+```
+Paste this path into the field below (expand `~` to your full home path).
+""")
+
+        with st.expander("⚙️ Step 2 — Install the Socket EA in MetaTrader 5", expanded=False):
+            st.markdown("""
+1. Open **MetaTrader 5**
+2. Go to **Tools → MetaQuotes Language Editor** (or press **F4**)
+3. Right-click **Expert Advisors → New → Expert Advisor (template) → Next → Next**
+4. Name it **`Socket`** → Finish
+5. **Delete all existing code** and paste the code below
+6. Press **F7** to compile — you should see `0 errors, 0 warnings`
+""")
+            st.code(self._EA_CODE, language="mql5")
+
+        with st.expander("📊 Step 3 — Attach EA to a chart", expanded=False):
+            st.markdown("""
+1. Open any chart (e.g. **EURUSD M1**)
+2. In the **Navigator** panel → **Expert Advisors** → find **Socket**
+3. **Drag** it onto the chart
+4. Check **"Allow Algo Trading"** → click OK
+5. Make sure the **"Algo Trading" button** in the toolbar is **green**
+
+The EA writes `status.txt` every second. Once it's running, the Test below will confirm the connection.
+""")
+
+        st.markdown("---")
+        default_path = os.getenv(
+            'MT5_FILE_PATH',
+            os.path.expanduser("~/Library/Application Support/net.metaquotes.wine.metatrader5/drive_c/Program Files/MetaTrader 5/MQL5/Files")
+        )
+
+        with st.form("direct_mt5_form"):
+            mt5_path = st.text_input(
+                "MT5 Files Directory Path",
+                value=default_path,
+                help="Directory containing order.txt and status.txt (the MQL5/Files folder)",
+            )
+            channel_ids = st.text_input(
+                "Source Channel IDs (Comma separated)",
+                value=os.getenv('CHANNEL_IDS', '-1002047709770'),
+                help="e.g., -1002047709770, -1003749453819",
+            )
+
+            c1, c2, c3 = st.columns([1, 2, 2])
+            with c1:
+                if st.form_submit_button("⬅️ Back", use_container_width=True):
+                    state.setup_step = 3
+                    st.rerun()
+            with c2:
+                test_pressed = st.form_submit_button("🔌 Test Connection", use_container_width=True)
+            with c3:
+                finish_pressed = st.form_submit_button("🏁 Complete Calibration", use_container_width=True, type="primary")
+
+        if test_pressed:
+            state.commands.append({"type": "TEST_DIRECT_MT5", "path": mt5_path})
+            st.info("🔌 Testing connection... check the logs panel.")
+
+        if finish_pressed:
+            if mt5_path:
+                state.setup_data['MT5_FILE_PATH'] = mt5_path
+                state.setup_data['CHANNEL_IDS'] = channel_ids
+                state.commands.append({"type": "FINISH_SETUP", "data": state.setup_data})
+                st.success("Saving configuration and launching...")
+                st.rerun()
+            else:
+                st.error("MT5 Files path is required.")
 
     def render_profile_tab(self, state):
         # Current Config Summary
@@ -820,14 +1153,73 @@ class Dashboard:
         if symbol_filter and symbol_filter != "GLOBAL":
             filtered_logs = [l for l in logs if symbol_filter in l['preview'].upper() or l['type'] == "SYSTEM"]
 
+        def _pipeline_tag(log):
+            preview  = log.get('preview', '')
+            ltype    = log.get('type', '')
+            p = preview.lower()
+
+            # Determine furthest stage reached
+            if ltype == 'NOISE' and ('ignored' in p or 'noise' in p):
+                # Dropped at parser — never routed
+                stages = [
+                    ('#00C853', '📡 TG'),
+                    ('#FF4B4B', '🧠 PARSE ✗'),
+                ]
+            elif ltype == 'NOISE' or 'blocked' in p or 'blocked_by_stop' in p or 'global stop' in p:
+                stages = [
+                    ('#00C853', '📡 TG'),
+                    ('#00C853', '🧠 PARSE'),
+                    ('#FF4B4B', '🔀 ROUTE ✗'),
+                ]
+            elif 'order placed' in p or 'successful' in p or 'placed:' in p:
+                stages = [
+                    ('#00C853', '📡 TG'),
+                    ('#00C853', '🧠 PARSE'),
+                    ('#00C853', '🔀 ROUTE'),
+                    ('#00C853', '⚡ EXEC'),
+                    ('#00C853', '✅ MT5'),
+                ]
+            elif 'queue' in p or 'queued' in p:
+                stages = [
+                    ('#00C853', '📡 TG'),
+                    ('#00C853', '🧠 PARSE'),
+                    ('#00C853', '🔀 ROUTE'),
+                    ('#FFD700', '⏳ QUEUE'),
+                ]
+            elif 'failed' in p or 'error' in p or ltype == 'ERROR':
+                stages = [
+                    ('#00C853', '📡 TG'),
+                    ('#00C853', '🧠 PARSE'),
+                    ('#00C853', '🔀 ROUTE'),
+                    ('#FF4B4B', '⚡ EXEC ✗'),
+                ]
+            elif ltype == 'SIGNAL':
+                stages = [
+                    ('#00C853', '📡 TG'),
+                    ('#00C853', '🧠 PARSE'),
+                    ('#00C853', '🔀 ROUTE'),
+                    ('#00BFFF', '⚡ EXEC'),
+                ]
+            else:
+                stages = [('#94A3B8', '📡 TG')]
+
+            spans = ''.join(
+                f'<span style="background:{c};color:#000;font-size:0.55rem;'
+                f'padding:1px 5px;border-radius:3px;font-weight:700;margin-left:2px">{label}</span>'
+                for c, label in stages
+            )
+            return spans
+
         log_container = st.container(height=300)
         with log_container:
             for log in reversed(filtered_logs):
                 tag_class = "signal-tag" if log['type'] == "SIGNAL" else "noise-tag"
+                pipeline  = _pipeline_tag(log)
                 st.markdown(f"""
                 <div class="intelligence-log">
-                    [{log['time']}] | {log['preview']} | 
+                    [{log['time']}] | {log['preview']} |
                     <span class="{tag_class}">AI Decision: {log['type']}</span>
+                    &nbsp;{pipeline}
                 </div>
                 """, unsafe_allow_html=True)
 
@@ -898,6 +1290,8 @@ class Dashboard:
                         order_status = f"🟢 MT5: {order_id}"
                     elif msg.get('queued'):
                         order_status = "⏳ Price Queued"
+                    elif msg.get('blocked_by_stop'):
+                        order_status = "🚫 Blocked (STOP Active)"
                     elif msg.get('hard_stop'):
                         order_status = "🛑 Global STOP"
                     elif msg.get('managed'):
@@ -918,9 +1312,25 @@ class Dashboard:
                     entry_val = s.get('entry', '—')
                     sl_val    = s.get('sl', '—')
                     side_val  = s.get('side') or s.get('type', '?')
+
+                    # Processing time badge
+                    parse_ms = msg.get('parse_ms')
+                    total_ms = msg.get('total_ms')
+                    if total_ms is not None:
+                        timing_html = (
+                            f'<span style="color:#94A3B8;font-size:0.6rem;margin-left:6px">'
+                            f'⏱ {total_ms}ms total'
+                            + (f' · {parse_ms}ms parse' if parse_ms is not None else '')
+                            + '</span>'
+                        )
+                    elif parse_ms is not None:
+                        timing_html = f'<span style="color:#94A3B8;font-size:0.6rem;margin-left:6px">⏱ {parse_ms}ms parse</span>'
+                    else:
+                        timing_html = ''
+
                     content_html += f"""<div style="margin-top: 3px; padding-top: 3px; border-top: 1px dashed rgba(0, 245, 255, 0.2); font-family: 'JetBrains Mono'; font-size: 0.7rem; line-height: 1.1;">
 <b>{side_val} {sym}</b> @ {entry_val} <br>
-SL: {sl_val} | <span style="font-weight: 800; color: {'#00F5FF' if order_id else '#FF4B4B'};">{order_status}</span>
+SL: {sl_val} | <span style="font-weight: 800; color: {'#00F5FF' if order_id else '#FF4B4B'};">{order_status}</span>{timing_html}
 </div>"""
                 
                 st.markdown(content_html + "</div>", unsafe_allow_html=True)
@@ -1040,31 +1450,87 @@ SL: {sl_val} | <span style="font-weight: 800; color: {'#00F5FF' if order_id else
             st.info(f"**GEMINI KEY:** `{mask_field(gemini_key, 6)}`")
 
         with creds_col2:
-            st.markdown("### 📊 EXECUTION ENGINE (MetaApi)")
-            mt5_head_col1, mt5_head_col2 = st.columns([2, 1])
-            with mt5_head_col1:
-                mt5_status_color = "#00FFA3" if state.mt5_connected else "#FF3D00"
-                st.markdown(f'<p style="color: {mt5_status_color}; font-size: 0.7rem; font-weight: 800; margin-top: -10px;">● { ("CONNECTED" if state.mt5_connected else "OFFLINE") if state.mt5_connected is not None else "PENDING" }</p>', unsafe_allow_html=True)
-            with mt5_head_col2:
-                if st.button("Check 🔄", key="check_mt5_p", use_container_width=True):
-                    state.commands.append({"type": "TEST_MT5"})
-                    st.toast("Testing MT5 Connection...", icon="📊")
-            
-            mt5_account = os.getenv('META_ACCOUNT_ID', 'Empty')
-            mt5_region = os.getenv('META_REGION', 'london')
-            st.info(f"""**ACCOUNT ID:** `{mt5_account}`  
-**REGION:** `{mt5_region}`""")
+            st.markdown("### 📊 EXECUTION ENGINE")
+            mt5_status_color = "#00FFA3" if state.mt5_connected else "#FF3D00"
+            st.markdown(f'<p style="color: {mt5_status_color}; font-size: 0.7rem; font-weight: 800; margin-top: -5px;">● { ("CONNECTED" if state.mt5_connected else "OFFLINE") }</p>', unsafe_allow_html=True)
+
+            current_engine = os.getenv('EXECUTION_ENGINE', 'metaapi').lower()
+            eng_tab1, eng_tab2 = st.tabs(["📡 MetaAPI Cloud", "💾 Direct MT5"])
+
+            with eng_tab1:
+                if current_engine == 'metaapi':
+                    st.success("Currently active engine")
+                meta_check_col1, meta_check_col2 = st.columns([2, 1])
+                with meta_check_col1:
+                    mt5_account = os.getenv('META_ACCOUNT_ID', 'Empty')
+                    mt5_region  = os.getenv('META_REGION', 'london')
+                    st.info(f"**ACCOUNT ID:** `{mt5_account}`  \n**REGION:** `{mt5_region}`")
+                with meta_check_col2:
+                    if st.button("Test 🔄", key="check_mt5_meta", use_container_width=True):
+                        state.commands.append({"type": "TEST_MT5"})
+                        st.toast("Testing MetaAPI...", icon="📡")
+
+                with st.form("switch_to_metaapi_form"):
+                    new_token   = st.text_input("MetaAPI Token", type="password", value=os.getenv('META_API_TOKEN', ''))
+                    new_account = st.text_input("Account ID", value=mt5_account)
+                    new_region  = st.text_input("Region", value=mt5_region)
+                    if st.form_submit_button("💾 Save & Activate MetaAPI", use_container_width=True):
+                        if new_token and new_account:
+                            set_key(env_path, "EXECUTION_ENGINE", "metaapi")
+                            set_key(env_path, "META_API_TOKEN", new_token)
+                            set_key(env_path, "META_ACCOUNT_ID", new_account)
+                            set_key(env_path, "META_REGION", new_region)
+                            state.commands.append({"type": "RESTART_BOT"})
+                            st.success("MetaAPI activated. Restarting...")
+                        else:
+                            st.error("Token and Account ID required.")
+
+            with eng_tab2:
+                if current_engine == 'direct_mt5':
+                    st.success("Currently active engine")
+                current_mt5_path = os.getenv('MT5_FILE_PATH', '')
+                d_check_col1, d_check_col2 = st.columns([2, 1])
+                with d_check_col1:
+                    st.info(f"**FILES PATH:**  \n`{current_mt5_path or 'Not set'}`")
+                with d_check_col2:
+                    if st.button("Test 🔄", key="check_mt5_direct", use_container_width=True):
+                        if current_mt5_path:
+                            state.commands.append({"type": "TEST_DIRECT_MT5", "path": current_mt5_path})
+                            st.toast("Testing Direct MT5...", icon="💾")
+                        else:
+                            st.warning("Set a path first.")
+
+                with st.form("switch_to_direct_form"):
+                    default_path = os.path.expanduser(
+                        "~/Library/Application Support/net.metaquotes.wine.metatrader5"
+                        "/drive_c/Program Files/MetaTrader 5/MQL5/Files"
+                    )
+                    new_mt5_path = st.text_input(
+                        "MT5 Files Directory",
+                        value=current_mt5_path or default_path,
+                        help="The MQL5/Files folder where order.txt and status.txt live",
+                    )
+                    if st.form_submit_button("💾 Save & Activate Direct MT5", use_container_width=True):
+                        if new_mt5_path:
+                            set_key(env_path, "EXECUTION_ENGINE", "direct_mt5")
+                            set_key(env_path, "MT5_FILE_PATH", new_mt5_path)
+                            state.commands.append({"type": "RESTART_BOT"})
+                            st.success("Direct MT5 activated. Restarting...")
+                        else:
+                            st.error("Path is required.")
+
+                with st.expander("📋 EA Source Code (copy into MetaTrader)"):
+                    st.code(self._EA_CODE, language="mql5")
 
             st.markdown("---")
             st.markdown("### 🛡️ GLOBAL RISK CONFIG")
-            
+
             g_risk = st.number_input("Default Risk ($)", 1.0, 1000.0, float(os.getenv('RISK_USD', 50.0)), step=1.0)
             g_rr = st.number_input("Default Master RR", 1.0, 50.0, float(os.getenv('RR_TARGET', 6.0)), step=0.5)
-            
+
             if st.button("💾 Save Global Defaults", use_container_width=True):
                 set_key(env_path, "RISK_USD", str(g_risk))
                 set_key(env_path, "RR_TARGET", str(g_rr))
-                # Update GLOBAL in settings object too
                 state.settings['GLOBAL']['risk_usd'] = g_risk
                 state.settings['GLOBAL']['rr_target'] = g_rr
                 state.save_settings()

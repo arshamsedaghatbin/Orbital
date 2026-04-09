@@ -263,7 +263,13 @@ class AIBrain:
         # If vector confidence exceeds threshold → cancel AI task immediately.
 
         vec_index = self._vector_index
-        has_vector = vec_index is not None and vec_index.is_ready and text and not image_bytes
+        # Vector is only reliable for short categorical texts (no price data).
+        # If the message contains decimal numbers (entry/SL prices) it is a
+        # trade signal that the AI must handle — skip vector early-exit.
+        import re as _re
+        _has_prices = bool(text and _re.search(r'\d+\.\d+', text))
+        has_vector = (vec_index is not None and vec_index.is_ready
+                      and text and not image_bytes and not _has_prices)
 
         # Create AI task
         ai_task = asyncio.create_task(self._ai_parse(text, image_bytes, parent_context=parent_context))
