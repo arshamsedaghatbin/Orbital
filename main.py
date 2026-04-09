@@ -406,7 +406,7 @@ async def bot_worker(state: BotState):
 
         # ── Auto-learn: AI-parsed categorical signals → add to vector index ──
         # Only short texts (no price numbers) to avoid memorizing specific trade data
-        if (signal_data.get('parsed_by') == 'ai'
+        if (str(signal_data.get('parsed_by', '')).startswith('ai')
                 and raw_text
                 and len(raw_text.strip()) < 80
                 and signal_data.get('type') in ('REENTRY', 'PULLBACK', 'CANCEL', 'TP_HIT', 'STOP')

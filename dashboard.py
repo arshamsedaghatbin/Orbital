@@ -1336,7 +1336,15 @@ The EA writes `status.txt` every second. Once it's running, the Test below will 
                 elif parsed_by and parsed_by.startswith('vector'):
                     conf = parsed_by.split(':')[1] if ':' in parsed_by else ''
                     parser_badge = f'<span style="background:#7B2FBE;color:#fff;font-size:0.6rem;padding:1px 5px;border-radius:4px;font-weight:700;margin-left:4px">🔮 VECTOR {conf}</span>'
-                elif parsed_by == 'ai':
+                elif parsed_by and parsed_by.startswith('ai:'):
+                    engine = parsed_by.split(':', 1)[1]  # 'ollama', 'gemini', 'gemini_fallback'
+                    if 'ollama' in engine:
+                        parser_badge = '<span style="background:#FF6B00;color:#fff;font-size:0.6rem;padding:1px 5px;border-radius:4px;font-weight:700;margin-left:4px">🦙 OLLAMA</span>'
+                    elif 'fallback' in engine:
+                        parser_badge = '<span style="background:#B71C1C;color:#fff;font-size:0.6rem;padding:1px 5px;border-radius:4px;font-weight:700;margin-left:4px">🌐 GEMINI ↩</span>'
+                    else:
+                        parser_badge = '<span style="background:#1565C0;color:#fff;font-size:0.6rem;padding:1px 5px;border-radius:4px;font-weight:700;margin-left:4px">🌐 GEMINI</span>'
+                elif parsed_by == 'ai':  # legacy fallback for old history entries
                     parser_badge = '<span style="background:#1565C0;color:#fff;font-size:0.6rem;padding:1px 5px;border-radius:4px;font-weight:700;margin-left:4px">🤖 AI</span>'
                 else:
                     parser_badge = ''
