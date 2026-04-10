@@ -342,26 +342,32 @@ async def bot_worker(state: BotState):
                     print(f"🔗 [Context] Found explicit parent signal {reply_to_id}: {parent_context['symbol']}")
         
         if not parent_context:
-            # 2. Implicit Context: Most recent pending/active trade
-            # Check pending queue first (most likely destination for recent 'cancel' or 'update')
-            if state.pending_queue:
-                last_p = state.pending_queue[-1]
-                parent_context = {
-                    "text": "[Implicit Context from Pending Queue]",
-                    "symbol": last_p.get('symbol', 'XAUUSD')
-                }
-                if not quiet:
-                    print(f"🧠 [Context] Implicit from Pending Queue -> {parent_context['symbol']}")
+            # 2. Implicit Context: Only for short categorical messages (no prices)
+            # If the text has prices (e.g. 4731.1), it's a NEW signal and should be autonomous.
+            import re as _re
+            _has_prices = bool(raw_text and _re.search(r'\d+\.\d+', raw_text))
+            _is_short   = bool(raw_text and len(raw_text) < 60)
             
-            # 3. Last Active trade
-            elif getattr(state, 'active_trades', []):
-                last_t = state.active_trades[0] # most recent from synced trades
-                parent_context = {
-                    "text": "[Implicit Context from Active Trade]",
-                    "symbol": last_t.get('symbol', 'XAUUSD')
-                }
-                if not quiet:
-                    print(f"🧠 [Context] Implicit from Active Trade -> {parent_context['symbol']}")
+            if _is_short and not _has_prices:
+                # Check pending queue first
+                if state.pending_queue:
+                    last_p = state.pending_queue[-1]
+                    parent_context = {
+                        "text": "[Implicit Context from Pending Queue]",
+                        "symbol": last_p.get('symbol', 'XAUUSD')
+                    }
+                    if not quiet:
+                        print(f"🧠 [Context] Implicit from Pending Queue -> {parent_context['symbol']}")
+                
+                # Check last Active trade
+                elif getattr(state, 'active_trades', []):
+                    last_t = state.active_trades[0]
+                    parent_context = {
+                        "text": "[Implicit Context from Active Trade]",
+                        "symbol": last_t.get('symbol', 'XAUUSD')
+                    }
+                    if not quiet:
+                        print(f"🧠 [Context] Implicit from Active Trade -> {parent_context['symbol']}")
 
         _t0 = time.time()
         signal_data = await ai.filter_signal(raw_text, image_bytes=image_bytes, parent_context=parent_context)

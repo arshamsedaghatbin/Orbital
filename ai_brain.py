@@ -310,6 +310,12 @@ class AIBrain:
                 # Correct side if AI under-classified (buystop → BUY etc.)
                 ai_result = self._correct_side(ai_result, text.lower() if text else "")
                 if ai_result:
+                    # Only override if the signal is a follow-up type (CANCEL, UPDATE, etc.)
+                    is_followup = ai_result.get('type') in ('CANCEL', 'UPDATE', 'REENTRY', 'PULLBACK', 'TP_HIT', 'STOP')
+                    if is_followup and parent_context:
+                        if not ai_result.get('symbol') or ai_result.get('symbol') == 'XAUUSD':
+                            if parent_context.get('symbol'):
+                                ai_result['symbol'] = parent_context['symbol']
                     ai_result['parsed_by'] = 'ai'
                 return ai_result
             except asyncio.CancelledError:
@@ -323,14 +329,16 @@ class AIBrain:
                 ai_result = await ai_task
                 ai_result = self._correct_side(ai_result, text.lower() if text else "")
                 if ai_result:
-                    # If we have parent context and AI didn't find a symbol/side, use parent's
-                    if parent_context:
+                    # Only override if the signal is a follow-up type (CANCEL, UPDATE, etc.)
+                    # If it's a NEW signal, 'XAUUSD' should be respected as a choice, not treated as a default to be overridden.
+                    is_followup = ai_result.get('type') in ('CANCEL', 'UPDATE', 'REENTRY', 'PULLBACK', 'TP_HIT', 'STOP')
+                    
+                    if is_followup and parent_context:
                         if not ai_result.get('symbol') or ai_result.get('symbol') == 'XAUUSD':
-                             # AI often defaults to XAUUSD. If parent has something else, prefer parent.
-                             if parent_context.get('symbol'):
-                                 ai_result['symbol'] = parent_context['symbol']
+                            if parent_context.get('symbol'):
+                                ai_result['symbol'] = parent_context['symbol']
                     ai_result['parsed_by'] = 'ai'
-                return ai_result
+                    return ai_result
             except Exception as e:
                 print(f"AI Filter Error: {e}")
                 return None
