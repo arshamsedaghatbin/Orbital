@@ -36,6 +36,81 @@ The high-speed bridge to MT5 via [MetaAPI](https://metaapi.cloud/).
 
 ---
 
+## 🧠 SIGNAL PROCESSING FLOW
+
+Orbital uses a **3-Stage Waterfall Intelligence** system to parse signals with maximum speed and minimum cost.
+
+```mermaid
+graph TD
+    %% 1. Input Stage
+    A[📩 Telegram Message] --> B{Telegram Listener}
+    B -->|New Message| C["🔍 Sanitize & Context Resolution"]
+    
+    %% 2. Context Logic
+    C --> D{Is it a Reply?}
+    D -->|Yes| E["🔗 Inherit Symbol/Context from Parent"]
+    D -->|No| F["🧠 Check Implicit Context (Last Pending)"]
+    E --> G["🌊 START WATERFALL PARSING"]
+    F --> G
+    
+    %% 3. Waterfall Intelligence
+    subgraph Waterfall ["AIBrain Intelligence Waterfall"]
+    G --> H{STAGE 1: Regex}
+    H -->|Keyword Match| I["⚡ Fast Path Exit"]
+    H -->|No Match| J["🚀 Start PARALLEL Stage"]
+    
+    subgraph Parallel ["Parallel Execution"]
+    J --> K["🔮 Vector Similarity Search"]
+    J --> L["🤖 Gemini AI Parsing"]
+    end
+    
+    K --> M{"Score >= Threshold?"}
+    M -->|Yes| N["⏩ Vector Early Exit"]
+    N --> O["Cancel AI Task"]
+    M -->|No| P["Wait for AI"]
+    L --> P
+    end
+    
+    %% 4. Post-Parsing & Learning
+    Q["📜 Normalized Signal Object"]
+    I --> Q
+    N --> Q
+    P --> Q
+    
+    Q --> R{Parsed by AI?}
+    R -->|Yes| S["🧠 Auto-Learn: Add to Vector Dataset"]
+    R -->|No| T["Proceed to Risk Engine"]
+    S --> T
+    
+    %% 5. Risk & Execution
+    subgraph Execution ["Execution Engine (Direct MT5 / MetaAPI)"]
+    T --> U["📉 Risk Calculation"]
+    U --> V["💰 Dynamic Lot Sizing"]
+    V --> W["📝 Place Order (order.txt / API)"]
+    end
+    
+    %% 6. Finalization
+    W --> X["✅ Order Confirmed"]
+    X --> Y["💾 Persist to history.json"]
+    Y --> Z["🖥️ Update Dashboard UI"]
+
+    %% Styling
+    style G fill:#f9f,stroke:#333,stroke-width:4px
+    style L fill:#4285F4,color:#fff
+    style K fill:#9C27B0,color:#fff
+    style I fill:#00E676,color:#333
+```
+
+### Intelligence Stages:
+1.  **⚡ Fast Path (Regex)**: Instant keyword matching for common commands (Cancel, Re-entry). Zero API latency.
+2.  **🔮 Semantic Path (Vector)**: Parallel embedding search. If confidence is high, it cancels the AI call to save costs.
+3.  **🤖 Neural Path (Gemini)**: Full multi-modal analysis for complex signals and chart screenshots.
+4.  **🧠 Auto-Learning**: The system automatically adds AI-parsed signals to the Vector dataset, making the bot faster and cheaper over time.
+
+---
+
+---
+
 ## 🛡️ HACKER FEATURES
 
 ### 🛡️ News Shield

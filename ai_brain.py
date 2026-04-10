@@ -274,9 +274,12 @@ class AIBrain:
         # Create AI task
         ai_task = asyncio.create_task(self._ai_parse(text, image_bytes, parent_context=parent_context))
 
+        # Use threshold from config if available, fallback to 0.79
+        current_threshold = config.get("vector_threshold", VECTOR_THRESHOLD)
+
         if has_vector:
             # Create vector task
-            vec_task = asyncio.create_task(vec_index.search(text))
+            vec_task = asyncio.create_task(vec_index.search(text, threshold=current_threshold))
             done, pending = await asyncio.wait(
                 [ai_task, vec_task],
                 return_when=asyncio.FIRST_COMPLETED
@@ -285,7 +288,7 @@ class AIBrain:
             # Check if vector finished first (it almost always will)
             if vec_task in done:
                 sig_type, confidence = vec_task.result()
-                if sig_type and confidence >= VECTOR_THRESHOLD:
+                if sig_type and confidence >= current_threshold:
                     # High confidence — cancel the AI call and return now
                     ai_task.cancel()
                     try:
