@@ -3,6 +3,7 @@ import pandas as pd
 import time
 from datetime import datetime
 import os
+import json
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -979,11 +980,35 @@ The EA writes `status.txt` every second. Once it's running, the Test below will 
                 st.caption("🔑 Add a Gemini API Key below to unlock the Gemini option.")
                 _provider_choice = "ollama"
 
-            if st.button("💾 Save AI Provider", use_container_width=True):
+            # --- AI Execution Strategy ---
+            st.write("---")
+            st.markdown("### 🦾 AI Execution Strategy")
+            _current_strategy = _cfg.get("execution_strategy", "LOCAL_PRIORITY")
+            
+            _strategy_map = {
+                "CLOUD_PRIORITY": "🌐 Cloud-Priority (Gemini First, Ollama Fallback)",
+                "LOCAL_PRIORITY": "🦙 Local-Priority (Ollama First, Gemini Fallback)",
+                "RACE": "🏎️ Race Mode (Parallel, Fastest Wins)"
+            }
+            
+            _strategy_choice = st.radio(
+                "Select Strategy",
+                options=["CLOUD_PRIORITY", "LOCAL_PRIORITY", "RACE"],
+                format_func=lambda x: _strategy_map[x],
+                index=["CLOUD_PRIORITY", "LOCAL_PRIORITY", "RACE"].index(_current_strategy),
+                help="CLOUD_PRIORITY: Best for accuracy.\nLOCAL_PRIORITY: Best for low latency.\nRACE: Best for extreme speed (Parallel).",
+                disabled=not _has_gemini # Cannot do Hybrid if Gemini is missing
+            )
+            
+            if not _has_gemini:
+                st.caption("ℹ️ Add a Gemini Key to enable Hybrid Routing (Strategy selection).")
+
+            if st.button("💾 Save AI Settings", use_container_width=True):
                 _cfg["ai_provider"] = _provider_choice
+                _cfg["execution_strategy"] = _strategy_choice
                 with open(_cfg_path, "w", encoding="utf-8") as _f:
                     _json.dump(_cfg, _f, indent=2)
-                st.success(f"✅ AI provider set to: **{_provider_choice}**")
+                st.success(f"✅ AI settings updated: Strategy set to **{_strategy_choice}**")
 
             st.markdown("")
             _gemini_status = "✅ Configured" if _has_gemini else "❌ Not set (Vision disabled)"
@@ -1331,7 +1356,9 @@ The EA writes `status.txt` every second. Once it's running, the Test below will 
                 
                 # Combine text and signal details into one block to avoid Streamlit element spacing
                 parsed_by = (msg.get('signal') or {}).get('parsed_by', '')
-                if parsed_by == 'regex':
+                if parsed_by == 'magic' or parsed_by.startswith('template'):
+                    parser_badge = '<span style="background:#00F5FF;color:#000;font-size:0.6rem;padding:1px 5px;border-radius:4px;font-weight:700;margin-left:4px">⚡ MAGIC</span>'
+                elif parsed_by == 'regex':
                     parser_badge = '<span style="background:#00C853;color:#000;font-size:0.6rem;padding:1px 5px;border-radius:4px;font-weight:700;margin-left:4px">⚡ REGEX</span>'
                 elif parsed_by and parsed_by.startswith('vector'):
                     conf = parsed_by.split(':')[1] if ':' in parsed_by else ''
@@ -1483,15 +1510,84 @@ SL: {sl_val} | <span style="font-weight: 800; color: {'#00F5FF' if order_id else
         """
         st.markdown("""
             <div style='background: linear-gradient(90deg, rgba(0, 245, 255, 0.05) 0%, rgba(112, 0, 255, 0.05) 100%); 
-                        padding: 20px; border-radius: 15px; border: 1px solid rgba(255,255,255,0.1); margin-bottom: 30px;'>
-                <h2 style='margin: 0; color: var(--primary-accent);'>⚙️ SYSTEM PROFILE</h2>
-                <p style='color: var(--text-muted); font-size: 0.9rem;'>Manage your core identities and execution parameters.</p>
+                        padding: 20px; border-radius: 15px; border: 1px solid rgba(255,255,255,0.1); margin-bottom: 20px;'>
+                <h2 style='margin: 0; color: var(--primary-accent);'>🔬 EXTRACTION LABORATORY</h2>
+                <p style='color: var(--text-muted); font-size: 0.9rem;'>Manage high-speed signal templates and test regex patterns.</p>
             </div>
         """, unsafe_allow_html=True)
+
+        with st.container(border=True):
+            lab_tab1, lab_tab2 = st.tabs(["📝 Template Manager", "🧪 Regex Sandbox"])
+            
+            with lab_tab1:
+                st.markdown("<p style='font-size: 0.8rem; color: #94A3B8; margin-bottom: 10px;'>High-speed Named-Group regex patterns. Channel-specific patterns override global ones.</p>", unsafe_allow_html=True)
+                
+                t_path = os.path.join(os.path.dirname(__file__), "signal_templates.json")
+                if os.path.exists(t_path):
+                    with open(t_path, "r") as f:
+                        t_data = json.load(f)
+                    
+                    # Manual Learning Button
+                    learn_col1, learn_col2 = st.columns([2, 1])
+                    with learn_col1:
+                        target_chan = st.selectbox("Select Channel to Analyze History", 
+                                                 options=[c['id'] for c in state.channels] if state.channels else ["None"])
+                    with learn_col2:
+                        if st.button("🚀 Learn Patterns (200 msgs)", use_container_width=True):
+                            state.commands.append({"type": "LEARN_TEMPLATES", "data": {"channel_id": target_chan}})
+                            st.toast("Learning task queued...", icon="🧠")
+
+                    st.markdown("---")
+                    # Global Templates List
+                    st.markdown("#### 🌐 Global Templates")
+                    for i, t in enumerate(t_data.get("global", [])):
+                        c_col1, c_col2, c_col3 = st.columns([3, 1, 1])
+                        c_col1.markdown(f"**{t['name']}** (Hits: `{t.get('matches', 0)}`)  \n`{t['regex']}`")
+                        if c_col2.button("🗑️", key=f"del_gt_{i}"):
+                            t_data["global"].pop(i)
+                            with open(t_path, "w") as f: json.dump(t_data, f, indent=2)
+                            st.rerun()
+                    
+                    # Channel Templates List
+                    for cid, templates in t_data.get("channels", {}).items():
+                        st.markdown(f"#### 📡 Channel: `{cid}`")
+                        for i, t in enumerate(templates):
+                            c_col1, c_col2, c_col3 = st.columns([3, 1, 1])
+                            c_col1.markdown(f"**{t['name']}** (Hits: `{t.get('matches', 0)}`)  \n`{t['regex']}`")
+                            if c_col2.button("🗑️", key=f"del_ct_{cid}_{i}"):
+                                t_data["channels"][cid].pop(i)
+                                with open(t_path, "w") as f: json.dump(t_data, f, indent=2)
+                                st.rerun()
+                else:
+                    st.info("Templates file not found.")
+
+            with lab_tab2:
+                st.markdown("<p style='font-size: 0.8rem; color: #94A3B8;'>Test your patterns against raw signal text.</p>", unsafe_allow_html=True)
+                test_pattern = st.text_input("Regex Pattern", placeholder="(?P<symbol>...)(?P<side>...)")
+                test_text = st.text_area("Sample Signal Text", height=120, placeholder="Paste signal here...")
+                
+                if st.button("🧪 Run Test Pattern", use_container_width=True):
+                    if test_pattern and test_text:
+                        import re
+                        try:
+                            compact = test_text.lower().replace('\n', ' ').replace('\r', '')
+                            compact = re.sub(r'\s+', ' ', compact).strip()
+                            m = re.search(test_pattern, compact, re.IGNORECASE)
+                            if m:
+                                st.success("✅ Pattern MATCHED!")
+                                st.json(m.groupdict())
+                            else:
+                                st.error("❌ Pattern did NOT match.")
+                        except Exception as e:
+                            st.error(f"⚠️ Regex Error: {e}")
+
+        st.markdown("---")
+        st.markdown("### ⚙️ CORE SYSTEMS")
 
         from dotenv import load_dotenv, set_key
         env_path = os.path.join(os.path.dirname(__file__), ".env")
         load_dotenv(override=True)
+        _has_gemini = bool(os.getenv('GEMINI_API_KEY', '').strip())
 
         def mask_field(val: str, prefix_len=4):
             if not val or val == "Empty": return "NOT SET"
@@ -1529,6 +1625,42 @@ SL: {sl_val} | <span style="font-weight: 800; color: {'#00F5FF' if order_id else
             
             gemini_key = os.getenv('GEMINI_API_KEY', 'Empty')
             st.info(f"**GEMINI KEY:** `{mask_field(gemini_key, 6)}`")
+
+            # --- AI Execution Strategy ---
+            st.markdown("---")
+            st.markdown("#### 🦾 HYBRID AI ROUTER")
+            
+            _cfg_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "parsing_config.json")
+            _cfg = {}
+            if os.path.exists(_cfg_path):
+                try:
+                    with open(_cfg_path, "r", encoding="utf-8") as _f:
+                        _cfg = json.load(_f)
+                except Exception:
+                    pass
+
+            _current_strategy = _cfg.get("execution_strategy", "LOCAL_PRIORITY")
+            _strategy_map = {
+                "CLOUD_PRIORITY": "🌐 Cloud-Priority (Gemini First)",
+                "LOCAL_PRIORITY": "🦙 Local-Priority (Ollama First)",
+                "RACE": "🏎️ Race Mode (Parallel)"
+            }
+            
+            _strategy_choice = st.radio(
+                "Execution Strategy",
+                options=["CLOUD_PRIORITY", "LOCAL_PRIORITY", "RACE"],
+                format_func=lambda x: _strategy_map[x],
+                index=["CLOUD_PRIORITY", "LOCAL_PRIORITY", "RACE"].index(_current_strategy),
+                help="CLOUD_PRIORITY: Best for accuracy.\nLOCAL_PRIORITY: Best for speed.\nRACE: Parallel execution (Fastest wins).",
+                disabled=not _has_gemini,
+                key="strategy_sidebar_p"
+            )
+
+            if st.button("💾 Apply Strategy", use_container_width=True, key="save_strat_p"):
+                _cfg["execution_strategy"] = _strategy_choice
+                with open(_cfg_path, "w", encoding="utf-8") as _f:
+                    json.dump(_cfg, _f, indent=2, ensure_ascii=False)
+                st.success(f"✅ Strategy: **{_strategy_choice}**")
 
         with creds_col2:
             st.markdown("### 📊 EXECUTION ENGINE")
@@ -1665,7 +1797,6 @@ SL: {sl_val} | <span style="font-weight: 800; color: {'#00F5FF' if order_id else
         with st.container(border=True):
             st.markdown("<p style='font-size: 0.8rem; color: #94A3B8; margin-bottom: 10px;'>Configure local Regex parsing and AI fallback behavior. Images always enforce AI processing. Changes take effect instantly without restarting.</p>", unsafe_allow_html=True)
             
-            import json
             config_path = os.path.join(os.path.dirname(__file__), "parsing_config.json")
             parsing_config = {}
             if os.path.exists(config_path):
@@ -1781,6 +1912,8 @@ SL: {sl_val} | <span style="font-weight: 800; color: {'#00F5FF' if order_id else
                     with open(config_path, "w", encoding="utf-8") as f:
                         json.dump(parsing_config, f, indent=2, ensure_ascii=False)
                     st.toast(f"Threshold set to {new_threshold}", icon="✅")
+
+        # --- 🔬 LABORATORY: SIGNAL EXTRACTION ENGINE ---
 
             # Live test query
             st.markdown("---")

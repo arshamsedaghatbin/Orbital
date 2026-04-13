@@ -6,66 +6,30 @@ import urllib.error
 import os
 from dotenv import load_dotenv
 
+from enum import Enum
+import time
+
 load_dotenv()
 
 VECTOR_THRESHOLD = 0.79   # Early-exit confidence level
-OLLAMA_URL       = "http://localhost:11434/api/generate"
+OLLAMA_HOST      = os.getenv("OLLAMA_HOST", "http://localhost:11434")
 OLLAMA_MODEL     = "llama3.2"
 
+class ExecutionStrategy(Enum):
+    CLOUD_PRIORITY = "CLOUD_PRIORITY"
+    LOCAL_PRIORITY = "LOCAL_PRIORITY"
+    RACE           = "RACE"
+
 # ── Shared system prompt used by both Ollama and Gemini ────────────────────────
-SIGNAL_SYSTEM_PROMPT = """You are a highly accurate specialized trading signal parser for the London Gold Bot.
-Analyze Telegram messages (text and/or charts) to extract trading signals for Forex (including Gold/XAUUSD, EURUSD, GBPUSD, etc.).
+SIGNAL_SYSTEM_PROMPT = """[CRITICAL: DO NOT RETURN 'NOISE' IF SYMBOL + PRICES ARE PRESENT. EVER.]
+You are a highly accurate specialized trading signal parser.
 
-RULES:
-1. VALID SIGNAL: If the text or chart contains a symbol (e.g., XAUUSD, GOLD, EURUSD), side (BUY/SELL/SELLSTOP/BUYSTOP), and an entry and SL price.
-   - BE EXTREMELY AGGRESSIVE: If you see prices (numbers like 2350.4, 1.14780) and a symbol, it IS a signal.
-   - Side Detection: SELL/SELLSTOP/SHORT are all SELLS. BUY/BUYSTOP/LONG are all BUYS.
-   - If no side is found but SL is > Entry, it's a SELL. If SL < Entry, it's a BUY.
-   - "E", "Ent", "Price", "Entry" all mean ENTRY.
-   - "SL", "Stop", "StopLoss", "S/L" all mean SL.
-2. NOISE: Only use this for greetings ("Hello"), links (https://...), or pure news analysis with no trade numbers.
-   - Never mark a message with a symbol and TWO price numbers as NOISE.
-3. NUMERIC ACCURACY: Extract prices exactly as written.
-4. SIGNAL TYPE: Identify if it's NEW, UPDATE, CANCEL, REENTRY, PULLBACK, TP_HIT, or STOP.
-   - Use `UPDATE` if keywords like "Update," "Modify," "New entry," "New price," or "Revised" are present.
-   - Use `CANCEL` if the message means "cancel the order", "order was not triggered", or similar.
-     CANCEL keywords (English): "cancel", "cancelled", "close order", "remove order", "order invalid", "ignore", "void", "not triggered", "did not activate".
-     CANCEL keywords (Persian/Farsi): "کنسل", "لغو", "فعال نشد", "باطل", "حذف", "بسته شود", "اوردر فعال نشد".
-   - Use `REENTRY` if keywords indicate re-entering a previous trade (often as a reply or following a stop loss).
-     REENTRY keywords (English): "enter again", "re-entry", "reenter", "open again".
-     REENTRY keywords (Persian/Farsi): "دوباره وارد بشید", "مجدد وارد بشید", "دوباره وارد شو", "با سل دوباره وارد", "با بای دوباره وارد", "با sell دوباره وارد", "با buy دوباره وارد", "اعتبار دارد", "دوباره اعتبار دارد".
-   - Use `PULLBACK` if keywords indicate entering at a pullback.
-     PULLBACK keywords (Persian/Farsi): "پولبک", "روی پولبک".
-   - Use `TP_HIT` if the message indicates a Take Profit level was reached.
-     Identify the level (1 or 2) and return it in the `tp_level` field.
-     Keywords (English): "Tp1✅", "Tp2✅", "TP1 hit", "TP2 reached".
-     Keywords (Persian/Farsi): "تارگت اول", "تارگت دوم", "تی پی ۱", "تی پی ۲".
-   - Use `STOP` if the message indicates a full stop or global cancellation of orders for a symbol.
-     STOP keywords (English): "Stop", "Hard stop", "Clear all", "Stop orders".
-     STOP keywords (Persian/Farsi): "استاپ", "توقف", "تمام اوردرها لغو".
-
-5. IMAGE ANALYSIS: If a chart image is provided:
-   - Look for watermark or header symbols (XAUUSD, GOLD).
-   - Look for horizontal lines: Red/Orange is usually SL. Green/Blue is usually Entry/TP.
-   - Extract SL and Entry from the numeric labels next to these lines.
-6. DEFAULT SYMBOL: "XAUUSD" if not specified.
-7. REPLIED MESSAGE CONTEXT: If provided, this is the text and symbol of the message being replied to.
-   - If the current message is ambiguous (e.g., "Cancel", "Re-entry", "Update") and lacks a symbol, you MUST inherit the symbol and trade side from this context.
-   - Example: Parent says "XAUUSD Buy", Reply says "Cancel" -> Parse as CANCEL for XAUUSD.
-8. OUTPUT: Return ONLY a JSON object with keys: type ("NEW", "UPDATE", "CANCEL", "REENTRY", "PULLBACK", "TP_HIT", or "STOP"), symbol, entry, sl, side, tps (a list of numbers), tp_level (for TP_HIT), and risk_level.
-9. RISK LEVEL: Detect if the signal indicates elevated risk.
-   - Set risk_level to "high" if keywords like "highrisk", "high risk", "risky", "aggressive", "پرریسک", "ریسک بالا" are present.
-   - Otherwise, set risk_level to "normal".
-
-EXAMPLES:
-Text: "XAUUSD Sellstop Entry 4739.4 Sl 4742.9 TP1 4730 TP2 4720" -> { "type": "NEW", "symbol": "XAUUSD", "entry": 4739.4, "sl": 4742.9, "side": "SELL", "tps": [4730.0, 4720.0], "risk_level": "normal" }
-Text: "Update Xauusd Entry 4700 Sl 4600" -> { "type": "UPDATE", "symbol": "XAUUSD", "entry": 4700.0, "sl": 4600.0, "side": "SELL", "tps": [], "risk_level": "normal" }
-Text: "Tp1✅ XAUUSD" -> { "type": "TP_HIT", "symbol": "XAUUSD", "tp_level": 1 }
-Text: "Tp2✅ Gold" -> { "type": "TP_HIT", "symbol": "XAUUSD", "tp_level": 2 }
-Text: "Stop XAUUSD" -> { "type": "STOP", "symbol": "XAUUSD" }
-Text: "اوردر فعال نشد کنسل شود" -> { "type": "CANCEL", "symbol": "XAUUSD", "entry": null, "sl": null, "side": null, "tps": [], "risk_level": "normal" }
-Text: "XAUUSD order must be cancelled" -> { "type": "CANCEL", "symbol": "XAUUSD", "entry": null, "sl": null, "side": null, "tp": null, "risk_level": "normal" }
-Text: "دوباره وارد بشید" -> { "type": "REENTRY", "symbol": "XAUUSD" }
+STRICT INSTRUCTIONS:
+1. PERSIAN/FARSI: Messages starting with "خرید" (Buy), "فروش" (Sell), or mentioning price are VALID commands.
+2. AGGRESSIVE DETECTION: Look for Entry, SL, and Symbol. If found, it IS a NEW signal.
+3. RISK SCAN: Always check for risk markers. Tag `risk_level: "high"` if words like "پرریسک", "با احتیاط", or "high risk" are near.
+4. JSON ONLY: Return nothing but the JSON object.
+5. OUTPUT: Return ONLY JSON with keys: type, symbol, entry, sl, side, tps (list), and risk_level.
 """
 
 
@@ -87,6 +51,14 @@ class AIBrain:
                 self.client = _genai.Client(api_key=self.gemini_key)
             except Exception as e:
                 print(f"⚠️ [AIBrain] Gemini client init failed: {e}")
+        
+        # Init Ollama Async Client
+        try:
+            from ollama import AsyncClient
+            self.ollama_client = AsyncClient(host=OLLAMA_HOST)
+        except Exception as e:
+            print(f"⚠️ [AIBrain] Ollama client init failed: {e}")
+            self.ollama_client = None
 
     @property
     def has_gemini(self) -> bool:
@@ -106,6 +78,75 @@ class AIBrain:
     def set_vector_index(self, index):
         """Called by bot_worker to attach the VectorIndex after it is built."""
         self._vector_index = index
+
+    # ── STAGE 0: Regex Templates (Instant Extraction) ──────────────────────────
+
+    def _template_parse(self, text: str, channel_id: str | None = None) -> dict | None:
+        """
+        Match text against stored Named-Group Regex templates.
+        Returns full signal data if matched, else None.
+        """
+        templates_path = os.path.join(os.path.dirname(__file__), "signal_templates.json")
+        if not os.path.exists(templates_path):
+            return None
+        
+        try:
+            with open(templates_path, "r") as f:
+                data = json.load(f)
+        except: return None
+
+        # Build list of templates to try: Channel-specific first, then Global
+        all_templates = data.get("channels", {}).get(str(channel_id), []) + data.get("global", [])
+        
+        compact = self._normalize_text(text)
+        
+        for t in all_templates:
+            if not t.get("enabled", True): continue
+            
+            try:
+                pattern = t.get("regex", "")
+                match = re.search(pattern, compact, re.IGNORECASE | re.MULTILINE)
+                if match:
+                    groups = match.groupdict()
+                    extracted_sym = groups.get("symbol", "XAUUSD") or "XAUUSD"
+                    extracted_sym = extracted_sym.upper().strip()
+                    
+                    # Symbol Blacklist to prevent 'High risk' being 'HIGH'
+                    if extracted_sym in ["HIGH", "RISK", "BUY", "SELL", "STOP", "LIMIT", "ORDER"]:
+                        extracted_sym = "XAUUSD"
+                        
+                    signal = {
+                        "type": "NEW",
+                        "symbol": extracted_sym.replace("GOLD", "XAUUSD"),
+                        "side": groups.get("side", "").upper(),
+                        "entry": float(groups.get("entry", 0)) if groups.get("entry") else None,
+                        "sl": float(groups.get("sl", 0)) if groups.get("sl") else None,
+                        "tps": [],
+                        "risk_level": "normal",
+                        "parsed_by": "magic" if groups.get("type", "NEW").upper() == "NEW" else "regex"
+                    }
+                    
+                    # Optional TP extraction (tp1, tp2...)
+                    for i in range(1, 5):
+                        tp_val = groups.get(f"tp{i}")
+                        if tp_val: signal["tps"].append(float(tp_val))
+                    
+                    # --- [USER REQUEST] INCREMENT MATCH COUNTER ---
+                    try:
+                        t["matches"] = t.get("matches", 0) + 1
+                        with open(templates_path, "w") as fw:
+                            json.dump(data, fw, indent=2)
+                    except Exception as fe:
+                        print(f"⚠️ [Template] Match count save fail: {fe}")
+
+                    # Valid if we have at least symbol/side or standard signal structure
+                    if signal["side"] and (signal["entry"] or signal["type"] != "NEW"):
+                        print(f"🎯 [Template Engine] Mode: {t.get('name')} | Match Found! (Total: {t['matches']})")
+                        return signal
+            except Exception as e:
+                print(f"⚠️ [Template Error] Pattern {t.get('name')} failed: {e}")
+
+        return None
 
     # ── STAGE 1: Fast Regex (sync, microseconds) ───────────────────────────────
 
@@ -212,12 +253,12 @@ class AIBrain:
 
     async def _ollama_parse(self, text: str, parent_context: dict | None = None) -> dict | None:
         """
-        Call the local Ollama API (llama3.2) for text-only signal parsing.
-        Returns a signal dict or None. Raises on connection failure.
+        Call local Ollama using AsyncClient.
         """
-        # Normalize multi-line format into single compact line
-        compact = self._normalize_text(text)
+        if not self.ollama_client:
+            return None
 
+        compact = self._normalize_text(text)
         content_text = compact
         if parent_context:
             content_text = (
@@ -229,26 +270,12 @@ class AIBrain:
 
         prompt = f"{SIGNAL_SYSTEM_PROMPT}\n\nMESSAGE TO PARSE:\n{content_text}\n\nReturn ONLY a JSON object."
 
-        payload = json.dumps({
-            "model": OLLAMA_MODEL,
-            "prompt": prompt,
-            "stream": False,
-        }).encode("utf-8")
-
-        loop = asyncio.get_event_loop()
-        def _call():
-            req = urllib.request.Request(
-                OLLAMA_URL,
-                data=payload,
-                headers={"Content-Type": "application/json"},
-                method="POST"
-            )
-            with urllib.request.urlopen(req, timeout=90) as resp:  # 90s for slow hardware
-                body = resp.read().decode("utf-8")
-                return json.loads(body).get("response", "")
-
-        response_text = await loop.run_in_executor(None, _call)
-        return self._parse_json_output(response_text)
+        try:
+            response = await self.ollama_client.generate(model=OLLAMA_MODEL, prompt=prompt, stream=False)
+            return self._parse_json_output(response.get("response", ""))
+        except Exception as e:
+            print(f"⚠️ [AIBrain] Ollama internal error: {e}")
+            return None
 
     # ── Gemini Engine (text + vision) ────────────────────────────────────────
 
@@ -295,52 +322,72 @@ class AIBrain:
 
     # ── Main AI dispatcher (text routing + fallback) ─────────────────────────
 
-    async def _ai_parse(self, text: str, image_bytes: bytes | None, parent_context: dict | None = None, provider: str = "ollama") -> dict | None:
+
+    async def _route_ai(self, text: str, image_bytes: bytes | None, parent_context: dict | None, strategy: ExecutionStrategy) -> dict | None:
         """
-        Route to the correct AI engine.
-
-        provider: 'ollama' → try Ollama first, fall back to Gemini on failure.
-                  'gemini' → go straight to Gemini (manual override).
-
-        Vision (image_bytes): always uses Gemini. Returns None with a logged
-        warning if Gemini key is not available.
+        Hybrid AI Router following user-selectable strategies.
         """
-
-        # ── Vision guard ────────────────────────────────────────────────────
+        # --- VISION GATE ---
         if image_bytes:
             if not self.has_gemini:
-                print("⚠️ [AIBrain] Vision SKIPPED — Gemini key required for chart analysis.")
-                # Signal callers to surface a notification (returns special marker)
-                raise GeminiKeyRequiredError("Gemini Key required for Vision.")
-            print("🔭 [AIBrain] Routing image to Gemini Vision...")
-            return await self._gemini_parse(text, image_bytes, parent_context)
+                return {"type": "NOT_SUPPORTED", "reason": "GEMINI_REQUIRED_FOR_VISION"}
+            res = await self._gemini_parse(text, image_bytes, parent_context)
+            if res: res["raw_text"] = text
+            return res
 
-        # ── Text routing ────────────────────────────────────────────────────
-        if provider == "gemini":
-            print("🌐 [AIBrain] Using Gemini (manual default)...")
-            return await self._gemini_parse(text, None, parent_context)
+        # --- ROUTING STRATEGIES ---
+        t_start = time.time()
 
-        # Ollama primary path
-        try:
-            print("🦙 [AIBrain] Routing to Ollama (llama3.2)...")
-            result = await self._ollama_parse(text, parent_context)
-            if result is not None:
-                result["engine"] = "ollama"
-                return result
-            print("⚠️ [AIBrain] Ollama returned empty/invalid output.")
-        except Exception as e:
-            print(f"⚠️ [AIBrain] Ollama failed: {e}")
+        async def _run_gemini():
+            if not self.has_gemini: return None
+            res = await self._gemini_parse(text, None, parent_context)
+            if res:
+                res["engine"] = "gemini"
+                res["raw_text"] = text
+            return res
 
-        # Fallback to Gemini
-        if self.has_gemini:
-            print("🔄 [AIBrain] Falling back to Gemini...")
-            result = await self._gemini_parse(text, None, parent_context)
-            if result:
-                result["engine"] = "gemini_fallback"
+        async def _run_ollama():
+            if not self.ollama_client: return None
+            res = await self._ollama_parse(text, parent_context)
+            if res:
+                res["engine"] = "ollama"
+                res["raw_text"] = text
+            return res
+
+        if strategy == ExecutionStrategy.CLOUD_PRIORITY:
+            # Gemini primary, silent failover to Ollama
+            result = await _run_gemini()
+            if not result:
+                print("🔄 [Router] Gemini failed/timeout. Falling back to local Ollama...")
+                result = await _run_ollama()
             return result
 
-        print("❌ [AIBrain] Both Ollama and Gemini unavailable.")
-        return None
+        elif strategy == ExecutionStrategy.LOCAL_PRIORITY:
+            # Ollama primary, silent failover to Gemini
+            result = await _run_ollama()
+            if not result:
+                print("🔄 [Router] Ollama failed. Falling back to Gemini...")
+                result = await _run_gemini()
+            return result
+
+        elif strategy == ExecutionStrategy.RACE:
+            # Execute both, return first valid result
+            tasks = [asyncio.create_task(_run_gemini()), asyncio.create_task(_run_ollama())]
+            
+            while tasks:
+                done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+                for t in done:
+                    res = t.result()
+                    if res:
+                        # Success! Cancel others
+                        for p in pending: p.cancel()
+                        print(f"🏎️ [Router] RACE won by: {res.get('engine')} in {time.time()-t_start:.2f}s")
+                        return res
+                    tasks.remove(t)
+                if not tasks: break
+            return None
+
+        return await _run_ollama() # Global default
 
     # ── STAGE 3: Vector Search (async, ~80ms) ──────────────────────────────────
 
@@ -368,18 +415,14 @@ class AIBrain:
 
     # ── Main Entry ──────────────────────────────────────────────────────────────
 
-    async def filter_signal(self, text: str, image_bytes: bytes | None = None, parent_context: dict | None = None):
+    async def filter_signal(self, text: str, image_bytes: bytes | None = None, parent_context: dict | None = None, channel_id: str | None = None):
         """
-        3-Stage Waterfall Signal Parser
+        4-Stage Waterfall Signal Parser
         ════════════════════════════════
-        Stage 1 — REGEX       (sync,  ~0.01ms) → instant exit on keyword hit
-        Stage 2 — AI Engine   (async, ~300-900ms) → Ollama or Gemini
-        Stage 3 — VECTOR      (async, ~80ms)   → vector > threshold → cancel AI
-
-        Provider selection:
-          - Default: Ollama (local)
-          - If user set 'gemini' as provider in parsing_config.json → Gemini
-          - Vision inputs always go to Gemini (regardless of provider setting)
+        Stage 0 — TEMPLATE    (sync,  ~0.01ms) → Instant Named-Group extraction
+        Stage 1 — REGEX       (sync,  ~0.01ms) → Fast command extraction (cancel/tp)
+        Stage 2 — AI Engine   (async, ~300ms)  → Router (Ollama/Gemini)
+        Stage 3 — VECTOR      (async, ~80ms)   → Similarity exit
         """
         # Load config
         config = {}
@@ -392,13 +435,30 @@ class AIBrain:
                 print(f"Failed to load parsing config: {e}")
 
         use_ai = config.get("use_ai", True)
+        strategy_str = config.get("execution_strategy", "LOCAL_PRIORITY")
         provider = self._get_ai_provider(config)
+        
+        # ── STAGE 0: TEMPLATE (Instant extraction) ─────────────────────────────
+        if text and not image_bytes:
+            t_res = self._template_parse(text, channel_id)
+            if t_res:
+                t_res["raw_text"] = text
+                # Final check for high-risk text override
+                text_low = text.lower()
+                hr_keywords = ["highrisk", "risky", "پرریسک", "ریسک بالا", "با احتیاط", "حجم کم", "0.01"]
+                if any(k in text_low for k in hr_keywords):
+                    t_res["risk_level"] = "high"
+                return t_res
 
         # ── STAGE 1: REGEX (sync gate) ─────────────────────────────────────────
         if text and not image_bytes:
             result = self._regex_parse(text, config, parent_context=parent_context)
             if result:
-                result['parsed_by'] = 'regex'
+                result['parsed_by'] = 'regex' # [USER REQUEST] Commands get 'regex'
+                result["raw_text"] = text
+                # High risk check
+                if any(k in text.lower() for k in ["highrisk", "risky", "پرریسک", "ریسک بالا", "با احتیاط", "حجم کم", "0.01"]):
+                    result["risk_level"] = "high"
                 return result
 
         # AI required if no text or image present
@@ -413,9 +473,16 @@ class AIBrain:
         has_vector = (vec_index is not None and vec_index.is_ready
                       and text and not image_bytes and not _has_prices)
 
+        # Determine Strategy
+        strategy_str = config.get("execution_strategy", "LOCAL_PRIORITY")
+        try:
+            strategy = ExecutionStrategy[strategy_str]
+        except:
+            strategy = ExecutionStrategy.LOCAL_PRIORITY
+
         # Create AI task
         ai_task = asyncio.create_task(
-            self._ai_parse(text, image_bytes, parent_context=parent_context, provider=provider)
+            self._route_ai(text, image_bytes, parent_context=parent_context, strategy=strategy)
         )
 
         if has_vector:
@@ -467,6 +534,12 @@ class AIBrain:
                             if parent_context.get('symbol'):
                                 ai_result['symbol'] = parent_context['symbol']
                     ai_result['parsed_by'] = f"ai:{ai_result.pop('engine', provider)}"
+                    
+                    # High risk check
+                    if text:
+                        text_l = text.lower()
+                        if any(k in text_l for k in ["highrisk", "risky", "پرریسک", "ریسک بالا", "با احتیاط", "حجم کم", "0.01"]):
+                            ai_result["risk_level"] = "high"
                 return ai_result
             except GeminiKeyRequiredError:
                 return _GEMINI_KEY_REQUIRED_SENTINEL
@@ -501,4 +574,4 @@ class GeminiKeyRequiredError(Exception):
     """Raised when a vision input arrives but no Gemini key is configured."""
 
 # A sentinel dict returned to process_signal so it can surface a toast/log
-_GEMINI_KEY_REQUIRED_SENTINEL = {"_gemini_key_required": True}
+_GEMINI_KEY_REQUIRED_SENTINEL = {"type": "NOT_SUPPORTED", "reason": "GEMINI_REQUIRED_FOR_VISION"}

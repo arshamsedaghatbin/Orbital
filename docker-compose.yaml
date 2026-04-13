@@ -1,4 +1,7 @@
+version: '3.8'
+
 services:
+  # سرویس اصلی هوش مصنوعی
   ollama:
     image: ollama/ollama:latest
     container_name: ollama_service
@@ -6,9 +9,29 @@ services:
       - "11434:11434"
     volumes:
       - ./ollama_data:/root/.ollama
-    # روی مک، داکر به طور خودکار از منابع سیستم استفاده می‌کند، 
-    # اما برای سرعت بهتر مطمئن شوید Docker Desktop شما به روز است.
+    restart: unless-stopped
 
+  # سرویس خودکار برای دانلود مدل‌ها (Provisioner)
+  ollama-pull-models:
+    image: ollama/ollama:latest
+    container_name: ollama_provisioner
+    volumes:
+      - ./ollama_data:/root/.ollama
+    depends_on:
+      - ollama
+    environment:
+      - OLLAMA_HOST=ollama_service:11434  # این خط حیاتی است
+    entrypoint: >
+      /bin/sh -c "
+      echo 'Waiting for Ollama to start...' &&
+      sleep 10 &&
+      echo 'Downloading Llama 3.2...' &&
+      ollama pull llama3.2 &&
+      echo 'Downloading Moondream (Vision)...' &&
+      ollama pull moondream &&
+      echo 'All models are ready!'"
+
+  # ایجنت اصلی پروژه Orbital
   app:
     build: .
     container_name: signal_processor
@@ -16,3 +39,6 @@ services:
       - ollama
     environment:
       - OLLAMA_HOST=http://ollama:11434
+    volumes:
+      - .:/app
+    restart: on-failure

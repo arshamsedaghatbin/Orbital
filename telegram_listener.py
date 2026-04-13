@@ -206,7 +206,6 @@ class TelegramListener:
         # Sort by date descending and take global top limit
         all_messages.sort(key=lambda x: x['date'] if x['date'] else 0, reverse=True)
         return all_messages[:limit]
-        return messages
 
     async def run_until_disconnected(self):
         await self.client.run_until_disconnected()

@@ -354,11 +354,17 @@ class TradingEngine:
         risk_usd = float(s.get('risk_usd', os.getenv('RISK_USD', 50)))
         rr_target = float(s.get('rr_target', os.getenv('RR_TARGET', 6)))
 
-        # ── Risk Level: halve lot size for high-risk signals ──────────────
+        # ── Risk Level Identification (AI Tag + Local Text Backup) ────────
         risk_level = str(data.get('risk_level', 'normal')).lower()
-        if risk_level == 'high':
+        raw_text = str(data.get('raw_text', '')).lower()
+        
+        # High-risk trigger keywords
+        hr_keywords = ["highrisk", "high risk", "risky", "پرریسک", "ریسک بالا", "با احتیاط", "حجم کم", "0.01"]
+        is_hr_text = any(k in raw_text for k in hr_keywords)
+
+        if risk_level == 'high' or is_hr_text:
             risk_usd = risk_usd / 2.0
-            print(f"⚠️ HIGH RISK signal — using half risk: ${risk_usd:.2f}")
+            print(f"⚠️ HIGH RISK detected (AI: {risk_level}, TextMatch: {is_hr_text}) — Halving risk to: ${risk_usd:.2f}")
 
         distance = abs(entry - sl)
         if distance == 0: return {"id": None, "error": "INVALID_STOPS"}

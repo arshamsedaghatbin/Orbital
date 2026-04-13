@@ -17,6 +17,7 @@ from direct_mt5_engine import DirectMT5Engine
 from telegram_listener import TelegramListener
 from dashboard import Dashboard
 from vector_index import VectorIndex
+from template_learner import TemplateLearner
 
 load_dotenv()
 
@@ -370,7 +371,7 @@ async def bot_worker(state: BotState):
                     print(f"🧠 [Context] Implicit from Active Trade -> {parent_context['symbol']}")
 
         _t0 = time.time()
-        signal_data = await ai.filter_signal(raw_text, image_bytes=image_bytes, parent_context=parent_context)
+        signal_data = await ai.filter_signal(raw_text, image_bytes=image_bytes, parent_context=parent_context, channel_id=source)
         _parse_ms = int((time.time() - _t0) * 1000)
         entry = {
             "msg_id":   msg_id,
@@ -392,16 +393,15 @@ async def bot_worker(state: BotState):
             return
 
         # ── Vision-without-key guard ───────────────────────────────────────────
-        if isinstance(signal_data, dict) and signal_data.get('_gemini_key_required'):
+        if isinstance(signal_data, dict) and signal_data.get('type') == 'NOT_SUPPORTED':
             state.logs.append({
                 "time": datetime.now().strftime("%H:%M:%S"),
                 "type": "WARNING",
-                "preview": "🔑 Gemini Key required for Vision. Chart analysis skipped."
+                "preview": "🖼️ Image Received: Gemini Key required for Vision. Signal NOT SUPPORTED."
             })
-            # Surface this as a transient UI toast via session state
             import streamlit as _st
             if hasattr(_st, 'session_state'):
-                _st.session_state['_toast_msg'] = "🔑 Gemini Key required for Vision"
+                _st.session_state['_toast_msg'] = "🖼️ NOT SUPPORTED: Gemini Key required for Vision"
             return
 
         # ── Auto-learn: AI-parsed categorical signals → add to vector index ──
@@ -415,6 +415,23 @@ async def bot_worker(state: BotState):
             added = await ai._vector_index.add_example(sig_type, raw_text.strip())
             if added:
                 print(f"🧠 [AutoLearn] Added '{raw_text.strip()[:40]}' → {sig_type} to vector index")
+
+        # ── Async Template Learning ───────────────────────────────────────────
+        # If AI succeeded where Template/Regex missed, trigger pattern learning
+        if (str(signal_data.get('parsed_by', '')).startswith('ai') 
+            and not image_bytes 
+            and signal_data.get('type') == 'NEW'):
+            
+            async def _bg_learn():
+                try:
+                    learner = TemplateLearner(ai)
+                    # Fetch recent history for this source
+                    hist = [h['text'] for h in state.history if h.get('source') == source][:100]
+                    await learner.learn_from_history(source, hist)
+                except Exception as e:
+                    print(f"⚠️ [Learner] Background task error: {e}")
+            
+            asyncio.create_task(_bg_learn())
 
 
         if is_historical:
@@ -1043,26 +1060,53 @@ async def bot_worker(state: BotState):
                         # Persist and then trigger restart
                         data = cmd['data']
                         update_env_file(data)
-                        
-                        # Update memory settings immediately so they propagate before/during restart
                         risk = float(data.get('RISK_USD', 50))
                         rr = float(data.get('RR_TARGET', 6))
-                        
                         for sym in state.settings:
                             state.settings[sym]['risk_usd'] = risk
                             state.settings[sym]['rr_target'] = rr
-                        
-                        state.logs.append({"time": datetime.now().strftime("%H:%M:%S"), "preview": "📁 Config saved. Settings synced globally. Restarting core...", "type": "SYSTEM"})
-                        # Reuse the restart logic
+                        state.logs.append({"time": datetime.now().strftime("%H:%M:%S"), "preview": "📁 Config saved. Restarting...", "type": "SYSTEM"})
                         state.commands.append({"type": "RESTART_BOT"})
 
-                    elif cmd['type'] == 'TEST_TELEGRAM':
-                        state.logs.append({"time": datetime.now().strftime("%H:%M:%S"), "preview": "🧪 Testing Telegram connection...", "type": "SYSTEM"})
-                        if listener:
-                            asyncio.create_task(connect_tg())
-                        else:
-                            state.logs.append({"time": datetime.now().strftime("%H:%M:%S"), "preview": "❌ Telegram not initialized.", "type": "ERROR"})
-                    
+                    elif cmd['type'] == 'LEARN_TEMPLATES':
+                        cid = str(cmd['data'].get('channel_id'))
+                        state.logs.append({"time": datetime.now().strftime("%H:%M:%S"), "preview": f"🧠 Analyzing history for source: {cid}...", "type": "SYSTEM"})
+                        
+                        async def _manual_learn():
+                            try:
+                                learner = TemplateLearner(ai)
+                                # 1. Search Live Memory
+                                msgs = [h['text'] for h in state.history if str(h.get('source')) == cid]
+                                
+                                # 2. Search Persistent Logs (Fallback)
+                                s_path = os.path.join(os.path.dirname(__file__), "signals_history.json")
+                                if os.path.exists(s_path):
+                                    try:
+                                        with open(s_path, "r") as f:
+                                            s_data = json.load(f)
+                                            # Take any text that is definitely a signal
+                                            msgs += [s['text'] for s in s_data if s.get('text')]
+                                    except Exception: pass
+
+                                messages = list(set(msgs))[:200]
+                                state.logs.append({"time": datetime.now().strftime("%H:%M:%S"), "preview": f"📊 Found {len(messages)} unique messages for analysis.", "type": "SYSTEM"})
+
+                                if not messages:
+                                    state.logs.append({"time": datetime.now().strftime("%H:%M:%S"), "preview": f"❌ No history found to analyze for {cid}.", "type": "ERROR"})
+                                    return
+
+                                regex = await learner.learn_from_history(cid, messages)
+                                if regex:
+                                    state.logs.append({"time": datetime.now().strftime("%H:%M:%S"), "preview": f"✅ New template activated: {regex[:30]}...", "type": "SYSTEM"})
+                                else:
+                                    state.logs.append({"time": datetime.now().strftime("%H:%M:%S"), "preview": "❌ Pattern analysis yielded no stable results.", "type": "ERROR"})
+                            except Exception as e:
+                                state.logs.append({"time": datetime.now().strftime("%H:%M:%S"), "preview": f"❌ Learner Error: {str(e)}", "type": "ERROR"})
+                        
+                        asyncio.create_task(_manual_learn())
+                        asyncio.create_task(_manual_learn())
+
+
                     elif cmd['type'] == 'TEST_AI':
                         state.logs.append({"time": datetime.now().strftime("%H:%M:%S"), "preview": "🧪 Testing AI Brain...", "type": "SYSTEM"})
                         if ai:
@@ -1545,12 +1589,35 @@ async def bot_worker(state: BotState):
             if not state.setup_needed and engine and ai:
                 state.is_running = True
                 
+                async def telegram_heartbeat_loop():
+                    """Monitor Telegram connection and auto-reconnect if dropped."""
+                    while True:
+                        await asyncio.sleep(30)
+                        if listener and state.is_running:
+                            try:
+                                # is_connected is a non-async check in listener
+                                is_ok = listener.is_connected()
+                                if not is_ok:
+                                    print("📡 [Heartbeat] Telegram disconnected! Attempting silent reconnect...")
+                                    state.telegram_connected = False
+                                    await listener.start() # Re-init connection
+                                    await asyncio.sleep(2)
+                                    if listener.is_connected():
+                                        state.telegram_connected = True
+                                        print("✅ [Heartbeat] Telegram connection restored.")
+                                else:
+                                    state.telegram_connected = True
+                            except Exception as e:
+                                print(f"⚠️ [Heartbeat] Telegram check failed: {e}")
+                                state.telegram_connected = False
+
                 # Tasks list for easy management
                 tasks = [
                     asyncio.create_task(sync_messages_loop()),
                     asyncio.create_task(engine.monitor_trades(get_settings=lambda sym: state.settings.get(sym, state.settings["GLOBAL"]))),
                     asyncio.create_task(update_metrics_loop()),
-                    asyncio.create_task(retry_queue_loop())
+                    asyncio.create_task(retry_queue_loop()),
+                    asyncio.create_task(telegram_heartbeat_loop())
                 ]
                 
                 # Managed set for non-critical/background initialization tasks

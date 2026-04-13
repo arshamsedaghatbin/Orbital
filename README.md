@@ -36,6 +36,78 @@ The high-speed bridge to MT5 via [MetaAPI](https://metaapi.cloud/).
 
 ---
 
+## 🧠 MODULAR SIGNAL INTELLIGENCE
+
+Orbital features a unique **Dual-Engine Hybrid Router** that balances local speed with cloud-based accuracy.
+
+```mermaid
+graph TD
+    %% 1. Input Stage
+    A[📩 Telegram Message] --> B{Telegram Listener}
+    B -->|New Message| C["🔍 Sanitize & Context Resolution"]
+    
+    %% 2. Context Logic
+    C --> D{Is it a Reply?}
+    D -->|Yes| E["🔗 Inherit Symbol/Context from Parent"]
+    D -->|No| F["🧠 Check Implicit Context (Last Pending)"]
+    E --> G["🌊 START WATERFALL PARSING"]
+    F --> G
+    
+    %% 3. Hybrid AI Router
+    subgraph Waterfall ["AIBrain Intelligence Waterfall"]
+    G --> H{STAGE 1: Regex}
+    H -->|Keyword Match| I["⚡ Fast Path Exit"]
+    H -->|No Match| J["🚀 Start AI ROUTER"]
+    
+    subgraph Router ["Hybrid AI Router"]
+    J --> K["🌩️ Gemini (Cloud)"]
+    J --> L["🦙 Ollama (Local)"]
+    
+    K --> M{Strategy?}
+    L --> M
+    M -->|Cloud First| N["🌐 Primary: Gemini"]
+    M -->|Local First| O["🏠 Primary: Ollama"]
+    M -->|Race| P["🏎️ Parallel: First Responder"]
+    end
+    
+    K --> Q["🔮 Vector Search (Early Exit)"]
+    end
+    
+    %% 4. Post-Parsing & Learning
+    R["📜 Normalized Signal Object"]
+    I --> R
+    N --> R
+    O --> R
+    P --> R
+    
+    R --> S{Parsed by AI?}
+    S -->|Yes| T["🧠 Auto-Learn: Add to Vector Dataset"]
+    S -->|No| U["Proceed to Risk Engine"]
+    T --> U
+    
+    %% 5. Risk & Execution
+    subgraph Execution ["Execution Engine (Direct MT5)"]
+    U --> V["📉 Risk Calculation"]
+    V --> W["📝 Place Order (order.txt)"]
+    end
+
+    %% Styling
+    style G fill:#f9f,stroke:#333,stroke-width:4px
+    style K fill:#4285F4,color:#fff
+    style L fill:#9C27B0,color:#fff
+    style P fill:#FF5722,color:#fff
+```
+
+### Routing Strategies:
+1.  **⚡ Fast Path (Regex)**: Zero-latency extraction for standard commands.
+2.  **🌐 Cloud-Priority**: Maximizes accuracy by prioritizing Gemini, with Ollama as an instant local failover.
+3.  **🏠 Local-Priority**: Maximizes privacy and speed by using Ollama first, with Gemini handling complex fallbacks.
+4.  **🏎️ Race Mode**: Executes both engines in parallel. The system captures the first valid response and terminates the slower task.
+
+---
+
+---
+
 ## 🛡️ HACKER FEATURES
 
 ### 🛡️ News Shield
