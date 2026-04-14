@@ -52,14 +52,21 @@ async def startup_event():
     ai = AIBrain(gemini_key or None)
     
     # Connect engine
-    try:
-        success = await engine.connect()
-        if success:
-            print("✅ Engine connected to MT5 Bridge.")
-        else:
-            print("❌ Engine failed to find status.txt.")
-    except Exception as e:
-        print(f"❌ Error connecting engine: {e}")
+    await connect_engine()
+
+async def connect_engine():
+    global engine
+    if engine:
+        try:
+            success = await engine.connect()
+            if success:
+                print("✅ Engine connected to MT5 Bridge.")
+                return True
+            else:
+                print("❌ Engine failed to find status.txt.")
+        except Exception as e:
+            print(f"❌ Error connecting engine: {e}")
+    return False
 
 # --- Helper Functions ---
 def load_history():
@@ -177,6 +184,35 @@ async def close_trade(ticket: str):
         if any(str(o.get('ticket')) == ticket for o in orders):
             success = await engine.connection.delete_order(ticket)
             
+    return {"status": "success" if success else "failed"}
+
+@app.delete("/trades")
+async def cancel_all_trades(symbol: Optional[str] = None):
+    """Cancels all pending orders and closes all positions (optionally filtered by symbol)."""
+    if not engine: raise HTTPException(status_code=503, detail="Engine offline")
+    
+    status = engine.connection._read_status()
+    positions = status.get("positions", [])
+    orders = status.get("orders", [])
+    
+    counts = {"closed": 0, "cancelled": 0}
+    
+    for p in positions:
+        if not symbol or p.get('symbol', '').upper() == symbol.upper():
+            if await engine.close_trade(str(p['ticket'])):
+                counts["closed"] += 1
+                
+    for o in orders:
+        if not symbol or o.get('symbol', '').upper() == symbol.upper():
+            if await engine.connection.delete_order(str(o['ticket'])):
+                counts["cancelled"] += 1
+                
+    return {"status": "success", "counts": counts}
+
+@app.post("/engine/reconnect")
+async def reconnect_engine():
+    """Triggers a manual reconnection to the MT5 Bridge."""
+    success = await connect_engine()
     return {"status": "success" if success else "failed"}
 
 # --- Start Command ---
