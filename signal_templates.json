@@ -73,7 +73,7 @@
         "name": "Auto-Learned 20260413_0108",
         "regex": "(?si)(?=.*?(?P<symbol>XAUUSD|GOLD|GBPUSD|EURUSD))(?=.*?(?P<side>BUY\\s*STOP|SELL\\s*STOP|BUY\\s*LIMIT|SELL\\s*LIMIT|BUY|SELL))(?=.*?(?:ENTRY\\s*)(?P<entry>\\d+(?:\\.\\d+)?))(?=.*?(?:SL\\s*)(?P<sl>\\d+(?:\\.\\d+)?))(?:(?=.*?(?:TP\\s*1|TP1|TP)\\s*(?P<tp1>\\d+(?:\\.\\d+)?)))?[\\s\\S]+",
         "enabled": true,
-        "matches": 42,
+        "matches": 79,
         "created_at": "2026-04-13T01:08:37.352467"
       },
       {

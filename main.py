@@ -369,6 +369,25 @@ async def bot_worker(state: BotState):
                 }
                 if not quiet:
                     print(f"🧠 [Context] Implicit from Active Trade -> {parent_context['symbol']}")
+            
+            # 4. Final Fallback: Signal History (crucial for re-entry after cancel)
+            if not parent_context:
+                for h in (state.history or []):
+                    if h and h.get('signal'):
+                        h_sym = h['signal'].get('symbol', 'UNKNOWN')
+                        if h_sym != 'UNKNOWN':
+                            parent_context = {
+                                "text": "[Implicit Context from History]",
+                                "symbol": h_sym
+                            }
+                            if not quiet:
+                                print(f"🧠 [Context] Implicit from Signal History -> {parent_context['symbol']}")
+                            break
+            
+            if not parent_context:
+                parent_context = {"text": "None", "symbol": "XAUUSD"}
+                if not quiet:
+                    print(f"🧠 [Context] No context found. Defaulting to -> {parent_context['symbol']}")
 
         _t0 = time.time()
         signal_data = await ai.filter_signal(raw_text, image_bytes=image_bytes, parent_context=parent_context, channel_id=source)
@@ -457,7 +476,10 @@ async def bot_worker(state: BotState):
         if sig_type in _block_types:
             _stopped = False
             for _h in state.history[1:]:  # [0] is the current entry just inserted
-                _h_sym = _h.get('signal', {}).get('symbol')
+                if _h is None: continue
+                _h_sig = _h.get('signal')
+                if not _h_sig: continue
+                _h_sym = _h_sig.get('symbol')
                 if _h_sym != sym:
                     continue
                 if _h.get('hard_stop'):
@@ -582,17 +604,109 @@ async def bot_worker(state: BotState):
                 "preview": f"[{source}] 🔄 RE-ENTRY request for {sym}"
             })
             if engine:
-                # Only pass a side override if the message explicitly named one
-                # 'UNKNOWN' means the reentry message had no side keyword — inherit from previous trade
+                # Only pass a side override if the message explicitly named one.
+                # 'UNKNOWN' means no side keyword in the reentry message — inherit from source.
                 raw_side = signal_data.get('side', '')
                 side_override = raw_side if raw_side and raw_side not in ('UNKNOWN', '') else None
-                params = await engine.get_last_trade_params(sym, side=side_override)
-                
-                if params:
-                    side_to_use = params['side'].upper()
-                    VALID_SIDES = {'BUY', 'SELL', 'BUY_STOP', 'SELL_STOP', 'BUY_LIMIT', 'SELL_LIMIT'}
+                params = None
 
-                    # SAFETY: abort if side is still invalid
+                # ── Priority 0: Reply Signal ──────────────────────────────────────
+                # If this REENTRY was sent as a reply to a known signal message, extract
+                # symbol / entry / SL directly from that parent signal — no broker lookup needed.
+                if reply_to_id:
+                    parent_hist = next((h for h in state.history if h.get('msg_id') == reply_to_id), None)
+                    if parent_hist:
+                        p_sig = parent_hist.get('signal') or {}
+                        p_sym = p_sig.get('symbol')
+                        p_entry = p_sig.get('entry')
+                        p_sl = p_sig.get('sl')
+                        p_side = p_sig.get('side')
+                        if p_sym and (p_entry is not None or p_sl is not None):
+                            params = {
+                                'side': side_override or p_side or 'BUY',
+                                'entry': p_entry,
+                                'sl': p_sl,
+                                'risk_level': p_sig.get('risk_level', 'normal'),
+                                'symbol': p_sym,
+                            }
+                            sym = p_sym  # align sym with the reply target
+                            print(f"🔗 [REENTRY] Params from Reply Signal: {params['side']} {sym} entry={p_entry} sl={p_sl}")
+                            state.logs.append({
+                                "time": datetime.now().strftime("%H:%M:%S"),
+                                "type": "SYSTEM",
+                                "preview": f"🔗 [REENTRY] Params from Reply Signal ({params['side']} {sym})"
+                            })
+
+                # ── Priority 1: Signal History (most recent NEW for this symbol) ──
+                # Checked first because history captures queue-only orders that were
+                # never placed in MT5 (e.g. canceled before execution). Since history
+                # is newest-first, the first match is always the most recent intent.
+                if not params:
+                    print(f"[REENTRY] Checking Signal History for {sym}")
+                    for entry_h in state.history:
+                        sig = entry_h.get('signal')
+                        if sig and str(sig.get('symbol', '')).upper() == sym.upper() and sig.get('type') == 'NEW':
+                            params = {
+                                'side': sig.get('side', 'BUY'),
+                                'entry': sig.get('entry'),
+                                'sl': sig.get('sl'),
+                                'risk_level': sig.get('risk_level', 'normal'),
+                                'symbol': sym,
+                            }
+                            state.logs.append({
+                                "time": datetime.now().strftime("%H:%M:%S"),
+                                "type": "SYSTEM",
+                                "preview": f"🧠 [REENTRY] Params from Signal History ({params['side']} {sym})"
+                            })
+                            print(f"🧠 [REENTRY] Params from Signal History: {params['side']} {sym}")
+                            break
+
+                # ── Priority 2: Broker / Local History ────────────────────────────
+                # Fallback: look up the most recently executed MT5 order/position.
+                if not params:
+                    params = await engine.get_last_trade_params(sym, side=side_override)
+                    print(f"[REENTRY] MT5 history search for {sym} side={side_override} → {params}")
+
+                # ── Priority 3: Pending Queue ─────────────────────────────────────
+                if not params:
+                    print(f"[REENTRY] Falling back to Pending Queue for {sym}")
+                    for q in reversed(state.pending_queue):
+                        if q['symbol'] == sym:
+                            q_data = q.get('data', {})
+                            if side_override and q_data.get('side') != side_override:
+                                continue
+                            params = {
+                                'side': q_data.get('side', 'BUY'),
+                                'entry': q_data.get('entry'),
+                                'sl': q_data.get('sl'),
+                                'risk_level': q_data.get('risk_level', 'normal'),
+                                'symbol': q['symbol'],
+                            }
+                            state.logs.append({
+                                "time": datetime.now().strftime("%H:%M:%S"),
+                                "type": "SYSTEM",
+                                "preview": f"🧠 [REENTRY] Params from Activity Queue ({params['side']} {sym})"
+                            })
+                            print(f"🧠 [REENTRY] Params from Pending Queue: {params['side']} {sym}")
+                            break
+
+                if params:
+                    print(f"[REENTRY] Resolved params: {params}")
+                    # Sync signal_data display fields for UI visibility
+                    if signal_data.get('side') in (None, 'UNKNOWN'):
+                        signal_data['side'] = params['side']
+                    if not signal_data.get('entry'):
+                        signal_data['entry'] = params['entry']
+                    if not signal_data.get('sl'):
+                        signal_data['sl'] = params['sl']
+
+                    side_to_use = params['side'].upper().replace(" ", "")
+                    VALID_SIDES = {
+                        'BUY', 'SELL',
+                        'BUY_STOP', 'SELL_STOP', 'BUYSTOP', 'SELLSTOP',
+                        'BUY_LIMIT', 'SELL_LIMIT', 'BUYLIMIT', 'SELLLIMIT'
+                    }
+
                     if side_to_use not in VALID_SIDES:
                         state.logs.append({
                             "time": datetime.now().strftime("%H:%M:%S"),
@@ -604,13 +718,43 @@ async def bot_worker(state: BotState):
                     else:
                         entry_price = params.get('entry')
                         sl_price    = params.get('sl')
-                        base_side   = side_to_use.replace("_STOP","").replace("_LIMIT","")  # BUY or SELL
+                        base_side   = side_to_use.replace("_STOP", "").replace("_LIMIT", "")  # BUY or SELL
 
-                        # ── Smart pending vs market decision ───────────────────
-                        # Get current price to decide if entry is still pending
-                        actual_side = side_to_use  # start with what history says
-                        try:
-                            if entry_price and engine and engine.connection:
+                        # ── SL Validation ─────────────────────────────────────────────
+                        # SL must be on the correct side of entry. If missing or invalid,
+                        # fall back to a symbol-specific default distance.
+                        def _validated_sl(sl, ep, bside, sym_key):
+                            default_dist = 3.0 if "XAU" in sym_key.upper() else 0.00100
+                            if sl is None or ep is None:
+                                if ep is not None:
+                                    computed = float(ep) - default_dist if bside == 'BUY' else float(ep) + default_dist
+                                    print(f"[REENTRY] SL missing — using default dist {default_dist} → sl={computed}")
+                                    return computed
+                                return None
+                            sl, ep = float(sl), float(ep)
+                            if bside == 'BUY' and sl >= ep:
+                                computed = ep - default_dist
+                                print(f"⚠️ [REENTRY] SL {sl} invalid for BUY entry {ep} — defaulting to {computed}")
+                                return computed
+                            if bside == 'SELL' and sl <= ep:
+                                computed = ep + default_dist
+                                print(f"⚠️ [REENTRY] SL {sl} invalid for SELL entry {ep} — defaulting to {computed}")
+                                return computed
+                            return sl
+
+                        sl_price = _validated_sl(sl_price, entry_price, base_side, params['symbol'])
+
+                        # ── Order Type: Pending vs Market ──────────────────────────────
+                        # Rules:
+                        #   • Inherited BUY_STOP / SELL_STOP → verify entry still in front of
+                        #     current price; if so keep pending, otherwise downgrade to market.
+                        #   • Plain BUY / SELL → always execute at market; never reuse old entry.
+                        actual_side  = base_side   # default: market direction
+                        entry_to_use = None        # default: market (no entry price)
+
+                        is_stop_order = 'STOP' in side_to_use or 'LIMIT' in side_to_use
+                        if is_stop_order and entry_price and engine.connection:
+                            try:
                                 price_info = await engine.connection.get_symbol_price(params['symbol'])
                                 if price_info:
                                     ask = float(price_info.get('ask', 0))
@@ -618,20 +762,23 @@ async def bot_worker(state: BotState):
                                     current = ask if base_side == 'BUY' else bid
 
                                     if base_side == 'BUY' and current < float(entry_price):
-                                        # Price is below entry → BUY_STOP is still valid (pending)
-                                        actual_side = 'BUY_STOP'
+                                        # Price still below entry → BUY_STOP remains valid
+                                        actual_side  = 'BUY_STOP'
+                                        entry_to_use = entry_price
                                     elif base_side == 'SELL' and current > float(entry_price):
-                                        # Price is above entry → SELL_STOP is still valid (pending)
-                                        actual_side = 'SELL_STOP'
+                                        # Price still above entry → SELL_STOP remains valid
+                                        actual_side  = 'SELL_STOP'
+                                        entry_to_use = entry_price
                                     else:
-                                        # Price already past entry → go market on same side
-                                        actual_side = base_side
-                                        entry_price = None  # market order ignores entry
-                        except Exception as e:
-                            print(f"⚠️ [REENTRY] Price check failed: {e} — using stored side")
-
-                        is_pending  = "STOP" in actual_side or "LIMIT" in actual_side
-                        entry_to_use = entry_price if is_pending else None
+                                        # Price already past entry → downgrade to market
+                                        actual_side  = base_side
+                                        entry_to_use = None
+                                        print(f"[REENTRY] {sym}: price {current} past entry {entry_price} — switching to market")
+                            except Exception as e:
+                                print(f"⚠️ [REENTRY] Price check failed: {e} — keeping as stop order")
+                                actual_side  = 'BUY_STOP' if base_side == 'BUY' else 'SELL_STOP'
+                                entry_to_use = entry_price
+                        # Plain BUY/SELL: entry_to_use stays None → market execution
 
                         reentry_data = {
                             'type': 'NEW',
@@ -658,16 +805,62 @@ async def bot_worker(state: BotState):
                                 "type": "SIGNAL",
                                 "preview": f"✅ [{source}] Re-entry successful: {resp['id']}"
                             })
+                            # Clear stale pending entries for this symbol from the Activity Queue
+                            async with (state.lock if state.lock else asyncio.Lock()):
+                                prev_count = len(state.pending_queue)
+                                state.pending_queue = [q for q in state.pending_queue if q['symbol'] != sym]
+                                if len(state.pending_queue) != prev_count:
+                                    save_pending_queue(state.pending_queue)
+                                    print(f"🧹 [REENTRY] Cleared {prev_count - len(state.pending_queue)} stale trade(s) from Activity Queue.")
                             entry['order_id'] = resp['id']
                             save_history(state.history)
                         else:
-                            state.logs.append({
-                                "time": datetime.now().strftime("%H:%M:%S"),
-                                "type": "NOISE",
-                                "preview": f"❌ [{source}] Re-entry failed: {resp.get('error')}"
-                            })
-                            entry['error'] = resp.get('error', "REENTRY_FAILED")
-                            save_history(state.history)
+                            reentry_error = resp.get('error', 'REENTRY_FAILED')
+                            if reentry_error == 'PRICE_ERROR':
+                                # Broker rejected the stop-order price → entry level already breached.
+                                # Retry once at current market price (entry=None → is_market=True).
+                                state.logs.append({
+                                    "time": datetime.now().strftime("%H:%M:%S"),
+                                    "type": "SYSTEM",
+                                    "preview": f"⚡ [{source}] PRICE_ERROR on stop order — retrying at MARKET for {params['symbol']}"
+                                })
+                                market_data = dict(reentry_data)
+                                market_data['entry'] = None
+                                market_data['side']  = base_side  # strip _STOP / _LIMIT
+                                resp2 = await engine.execute_trade(market_data, sym_settings, source="Telegram", fallback_to_market=True)
+                                if resp2.get('id'):
+                                    state.logs.append({
+                                        "time": datetime.now().strftime("%H:%M:%S"),
+                                        "type": "SIGNAL",
+                                        "preview": f"✅ [{source}] Re-entry (market fallback) successful: {resp2['id']}"
+                                    })
+                                    async with (state.lock if state.lock else asyncio.Lock()):
+                                        prev_count = len(state.pending_queue)
+                                        state.pending_queue = [q for q in state.pending_queue if q['symbol'] != sym]
+                                        if len(state.pending_queue) != prev_count:
+                                            save_pending_queue(state.pending_queue)
+                                            print(f"🧹 [REENTRY] Cleared {prev_count - len(state.pending_queue)} stale trade(s) from Activity Queue.")
+                                    entry['order_id'] = resp2['id']
+                                    save_history(state.history)
+                                else:
+                                    reentry_error = resp2.get('error', 'REENTRY_FAILED')
+                                    state.logs.append({
+                                        "time": datetime.now().strftime("%H:%M:%S"),
+                                        "type": "NOISE",
+                                        "preview": f"❌ [{source}] Re-entry market fallback also failed ({reentry_error})."
+                                    })
+                                    entry['error'] = reentry_error
+                                    save_history(state.history)
+                            else:
+                                # REENTRY is a one-shot command. Do NOT queue on failure — the user
+                                # can send REENTRY again if they still want in.
+                                state.logs.append({
+                                    "time": datetime.now().strftime("%H:%M:%S"),
+                                    "type": "NOISE",
+                                    "preview": f"❌ [{source}] Re-entry failed ({reentry_error}) — send REENTRY again to retry."
+                                })
+                                entry['error'] = reentry_error
+                                save_history(state.history)
                 else:
                     state.logs.append({
                         "time": datetime.now().strftime("%H:%M:%S"),
@@ -689,6 +882,49 @@ async def bot_worker(state: BotState):
                 side_override = signal_data.get('side')
                 params = await engine.get_last_trade_params(sym, side=side_override)
                 
+                # Fallback: Check state.pending_queue if no history found
+                if not params:
+                    for q in reversed(state.pending_queue):
+                        if q['symbol'] == sym:
+                            q_data = q.get('data', {})
+                            if side_override and q_data.get('side') != side_override:
+                                continue
+                            params = {
+                                'side': q_data.get('side', 'BUY'),
+                                'entry': q_data.get('entry'),
+                                'sl': q_data.get('sl', 0),
+                                'risk_level': q_data.get('risk_level', 'normal'),
+                                'symbol': q['symbol']
+                            }
+                            state.logs.append({
+                                "time": datetime.now().strftime("%H:%M:%S"),
+                                "type": "SYSTEM",
+                                "preview": f"🧠 [PULLBACK] Inherited params from Activity Queue ({params['side']} {sym})"
+                            })
+                            print(f"🧠 [PULLBACK] Referenced last trade from Pending Queue: {params['side']} {sym}")
+                            break
+
+                # Final Fallback: Check state.history
+                if not params:
+                    target_sym = sym.upper()
+                    for entry_h in state.history:
+                        sig = entry_h.get('signal')
+                        if sig and str(sig.get('symbol', '')).upper() == target_sym and sig.get('type') == 'NEW':
+                            params = {
+                                'side': sig.get('side', 'BUY'),
+                                'entry': sig.get('entry'),
+                                'sl': sig.get('sl'),
+                                'risk_level': sig.get('risk_level', 'normal'),
+                                'symbol': sym
+                            }
+                            state.logs.append({
+                                "time": datetime.now().strftime("%H:%M:%S"),
+                                "type": "SYSTEM",
+                                "preview": f"🧠 [PULLBACK] Inherited params from Signal History ({params['side']} {sym})"
+                            })
+                            print(f"🧠 [PULLBACK] Referenced last trade from Signal History: {params['side']} {sym}")
+                            break
+
                 if params and params.get('entry'):
                     # Force side to a STOP order using the original side logic
                     base_side = params['side'].replace("_STOP", "").replace("_LIMIT", "")
@@ -722,15 +958,46 @@ async def bot_worker(state: BotState):
                             "type": "SIGNAL",
                             "preview": f"✅ [{source}] Pullback successful: {resp['id']}"
                         })
+                        # Cleanup old pending versions in Activity Queue
+                        async with (state.lock if state.lock else asyncio.Lock()):
+                            prev_count = len(state.pending_queue)
+                            state.pending_queue = [q for q in state.pending_queue if q['symbol'] != sym]
+                            if len(state.pending_queue) != prev_count:
+                                save_pending_queue(state.pending_queue)
+                                print(f"🧹 [PULLBACK] Cleared {prev_count - len(state.pending_queue)} stale trade(s) from Activity Queue.")
+
                         entry['order_id'] = resp['id']
                         save_history(state.history)
                     else:
-                        state.logs.append({
-                            "time": datetime.now().strftime("%H:%M:%S"),
-                            "type": "NOISE",
-                            "preview": f"❌ [{source}] Pullback failed: {resp.get('error')}"
-                        })
-                        entry['error'] = resp.get('error', "PULLBACK_FAILED")
+                        pullback_error = resp.get('error', 'PULLBACK_FAILED')
+                        retriable = ["PRICE_ERROR", "DISCONNECTED", "MARKET_CLOSED", "TRADE_DISABLED", "INVALID_STOPS"]
+                        if pullback_error in retriable:
+                            queue_item = {
+                                'id': f"pending_{int(time.time())}",
+                                'symbol': pullback_data['symbol'],
+                                'data': pullback_data,
+                                'source': 'Telegram',
+                                'added_at': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                                'retries': 0,
+                                'error_type': pullback_error,
+                                'risk_usd': sym_settings.get('risk_usd')
+                            }
+                            async with (state.lock if state.lock else asyncio.Lock()):
+                                state.pending_queue.append(queue_item)
+                                save_pending_queue(state.pending_queue)
+                            state.logs.append({
+                                "time": datetime.now().strftime("%H:%M:%S"),
+                                "type": "SIGNAL",
+                                "preview": f"⏳ [{source}] Pullback {pullback_data['symbol']} {pullback_error} — Added to Activity Queue"
+                            })
+                            entry['queued'] = True
+                        else:
+                            state.logs.append({
+                                "time": datetime.now().strftime("%H:%M:%S"),
+                                "type": "NOISE",
+                                "preview": f"❌ [{source}] Pullback failed: {pullback_error}"
+                            })
+                        entry['error'] = pullback_error
                         save_history(state.history)
                 else:
                     state.logs.append({
@@ -1595,14 +1862,14 @@ async def bot_worker(state: BotState):
                         await asyncio.sleep(30)
                         if listener and state.is_running:
                             try:
-                                # is_connected is a non-async check in listener
-                                is_ok = listener.is_connected()
+                                # active ping check (calls get_me)
+                                is_ok = await listener.ping()
                                 if not is_ok:
-                                    print("📡 [Heartbeat] Telegram disconnected! Attempting silent reconnect...")
+                                    print("📡 [Heartbeat] Telegram disconnected or session invalid! Attempting silent reconnect...")
                                     state.telegram_connected = False
                                     await listener.start() # Re-init connection
                                     await asyncio.sleep(2)
-                                    if listener.is_connected():
+                                    if await listener.ping():
                                         state.telegram_connected = True
                                         print("✅ [Heartbeat] Telegram connection restored.")
                                 else:

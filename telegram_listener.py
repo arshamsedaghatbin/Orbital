@@ -17,8 +17,19 @@ class TelegramListener:
         self._tg_op_lock = asyncio.Lock()
 
     def is_connected(self):
-        """Check if Telegram client is currently connected."""
+        """Check if Telegram client is currently connected (socket check)."""
         return self.client.is_connected() if self.client else False
+
+    async def ping(self):
+        """Active check: attempts to call get_me() to verify session validity."""
+        if not self.is_connected():
+            return False
+        try:
+            # get_me() is a very lightweight API call
+            await self.client.get_me()
+            return True
+        except Exception:
+            return False
 
     async def get_entity_name(self, chat_id):
         """Fetch the name/title of a group or channel with single-threaded lock to avoid DB contention."""

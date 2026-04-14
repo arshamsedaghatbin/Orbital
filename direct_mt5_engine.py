@@ -81,8 +81,10 @@ class DirectMT5Connection:
             if new:
                 return str(next(iter(new)))
 
-        # Timeout — return a deterministic fallback ID so local tracking still works
-        return f"direct_{int(time.time())}"
+        # Timeout — EA did not confirm a new ticket.
+        # Return a sentinel so callers know this order was NOT accepted.
+        print(f"⚠️ [DirectMT5] _place_and_get_ticket timed out — EA may have rejected the order.")
+        return f"REJECTED_{int(time.time())}"
 
     def _resolve_ticket(self, ticket_id) -> str:
         """
@@ -240,6 +242,8 @@ class DirectMT5Connection:
             "volume": str(volume), "price": str(open_price),
             "sl": str(stop_loss), "tp": str(take_profit), "ticket": "0",
         })
+        if str(ticket).startswith("REJECTED_"):
+            raise Exception("PRICE_ERROR: EA rejected BUY_STOP order (invalid price or market conditions)")
         return {"orderId": ticket}
 
     async def create_stop_sell_order(self, symbol, volume, open_price, stop_loss, take_profit):
@@ -248,6 +252,8 @@ class DirectMT5Connection:
             "volume": str(volume), "price": str(open_price),
             "sl": str(stop_loss), "tp": str(take_profit), "ticket": "0",
         })
+        if str(ticket).startswith("REJECTED_"):
+            raise Exception("PRICE_ERROR: EA rejected SELL_STOP order (invalid price or market conditions)")
         return {"orderId": ticket}
 
     async def create_limit_buy_order(self, symbol, volume, open_price, stop_loss, take_profit):
@@ -256,6 +262,8 @@ class DirectMT5Connection:
             "volume": str(volume), "price": str(open_price),
             "sl": str(stop_loss), "tp": str(take_profit), "ticket": "0",
         })
+        if str(ticket).startswith("REJECTED_"):
+            raise Exception("PRICE_ERROR: EA rejected BUY_LIMIT order (invalid price or market conditions)")
         return {"orderId": ticket}
 
     async def create_limit_sell_order(self, symbol, volume, open_price, stop_loss, take_profit):
@@ -264,6 +272,8 @@ class DirectMT5Connection:
             "volume": str(volume), "price": str(open_price),
             "sl": str(stop_loss), "tp": str(take_profit), "ticket": "0",
         })
+        if str(ticket).startswith("REJECTED_"):
+            raise Exception("PRICE_ERROR: EA rejected SELL_LIMIT order (invalid price or market conditions)")
         return {"orderId": ticket}
 
     # ── Position / order management ───────────────────────────────────────────
@@ -537,8 +547,8 @@ class DirectMT5Engine(TradingEngine):
         t_id_str = str(ticket_id)
         trade_info = self.active_trades.get(t_id_str, {})
         symbol = trade_info.get("symbol", "")
-        side = trade_info.get("side", "")
-        is_pending = side.endswith("_STOP") or side.endswith("_LIMIT")
+        side = trade_info.get("side", "").upper()
+        is_pending = "STOP" in side or "LIMIT" in side
 
         print(f"🔧 [DirectMT5Engine] close_trade: ticket={t_id_str!r} symbol={symbol!r} side={side!r} is_pending={is_pending}")
 

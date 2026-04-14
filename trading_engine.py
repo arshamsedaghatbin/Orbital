@@ -202,10 +202,15 @@ class TradingEngine:
         for t_id, t in self.active_trades.items():
             if t['symbol'].upper().startswith(target):
                 all_relevant.append(t)
+                
+        # Sort chronologically by placement time. This ensures REENTRY references 
+        # the truly "last" signal rather than old pending orders.
+        all_relevant.sort(key=lambda x: x.get('_placed_at', 0))
         
         if not all_relevant:
             # Maybe search by partial match if no exact match
             all_relevant = [t for t in self.closed_trades if target in t['symbol'].upper()]
+            all_relevant.sort(key=lambda x: x.get('_placed_at', 0))
         
         if not all_relevant:
             # 3. Last Resort: Search MT5 Deal History (last 24 hours)
@@ -244,10 +249,14 @@ class TradingEngine:
             
         # ── Filter to only valid, executed price trades ──────────────────────────
         # Exclude entries with missing/UNKNOWN side, missing entry/sl, or SL on wrong side
-        VALID_SIDES = {'BUY', 'SELL', 'BUY_STOP', 'SELL_STOP', 'BUY_LIMIT', 'SELL_LIMIT'}
+        VALID_SIDES = {
+            'BUY', 'SELL', 
+            'BUY_STOP', 'SELL_STOP', 'BUYSTOP', 'SELLSTOP',
+            'BUY_LIMIT', 'SELL_LIMIT', 'BUYLIMIT', 'SELLLIMIT'
+        }
 
         def _is_valid_trade(t: dict) -> bool:
-            s = (t.get('side') or '').upper()
+            s = (t.get('side') or '').upper().replace(" ", "")
             if s not in VALID_SIDES:
                 return False
             try:
@@ -267,6 +276,14 @@ class TradingEngine:
 
         # Fall back to unfiltered list only if ALL are invalid (edge case)
         candidates = valid_trades if valid_trades else all_relevant
+
+        # Prefer previously executed market orders (BUY/SELL) over pending orders
+        # (BUY_STOP/SELL_STOP/BUY_LIMIT/SELL_LIMIT). Re-entry should inherit from
+        # a position that was actually active, not a canceled pending order.
+        MARKET_SIDES = {'BUY', 'SELL'}
+        market_candidates = [t for t in candidates if (t.get('side') or '').upper().replace(" ", "") in MARKET_SIDES]
+        if market_candidates:
+            candidates = market_candidates
 
         # Last one is most recent (assuming they were appended in order)
         last_trade = candidates[-1]
@@ -471,7 +488,8 @@ class TradingEngine:
                 'status': 'OPEN',
                 'be_hit': False,
                 'partial_hit': False,
-                'source': source
+                'source': source,
+                '_placed_at': time.time()
             }
             self._save_active_trades()
             return {"id": order_id, "error": None}
@@ -641,21 +659,33 @@ class TradingEngine:
                          [o for o in orders if target in o['symbol'].upper()]
             
             if not sym_orders:
-                print(f"[CancelOrder] No pending orders found for {symbol}")
-                return False
+                print(f"[CancelOrder] No explicit MT5 tickets found for {symbol}, checking local tracker...")
 
-            ord_ = sym_orders[-1]  # most recent
-            ticket = ord_['id']
-            await self.connection.cancel_order(ticket)
-            print(f"🚫 Cancelled pending order {ticket} for {symbol}")
-            
-            # Clean up local tracking
-            if ticket in self.active_trades:
-                trade_data = self.active_trades.pop(ticket)
+            for ord_ in sym_orders:
+                ticket = ord_['id']
+                await self.connection.cancel_order(ticket)
+                print(f"🚫 Cancelled pending order {ticket} for {symbol}")
+                
+            # Clean up local tracking for REAL and FAKE tickets
+            keys_to_drop = []
+            for t_id, data in self.active_trades.items():
+                if data.get("symbol", "").upper().startswith(target) or target in data.get("symbol", "").upper():
+                    # Only cancel if it's considered pending
+                    side = data.get("side", "").upper()
+                    if "STOP" in side or "LIMIT" in side:
+                        keys_to_drop.append(t_id)
+
+            for t_id in keys_to_drop:
+                trade_data = self.active_trades.pop(t_id)
                 trade_data['status'] = 'CANCELLED'
                 self.closed_trades.append(trade_data)
-            
-            return True
+                # If there's an actual EA ticket connection needing cleanup, issue a cancel just in case
+                if t_id.startswith("direct_"):
+                    await self.connection.cancel_order(t_id, symbol=symbol)
+
+            self._save_active_trades()
+            self._save_history()
+            return bool(sym_orders or keys_to_drop)
         except Exception as e:
             print(f"Cancel Order Error: {e}")
             return False
