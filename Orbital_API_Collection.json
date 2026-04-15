@@ -1,8 +1,8 @@
 {
 	"info": {
-		"_postman_id": "orbital-trading-api-collection",
-		"name": "Orbital Trading API",
-		"description": "Standard REST Collection for the Orbital MT5 Signal Processing Engine",
+		"_postman_id": "orbital-trading-api-v1-1",
+		"name": "Orbital Trading API v1.1",
+		"description": "Professional REST Collection for Orbital Engine with full DTO support.",
 		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
 	},
 	"item": [
@@ -10,7 +10,7 @@
 			"name": "System",
 			"item": [
 				{
-					"name": "Service Root",
+					"name": "Health Check",
 					"request": {
 						"method": "GET",
 						"header": [],
@@ -22,7 +22,7 @@
 					}
 				},
 				{
-					"name": "System Status",
+					"name": "System Status (DTO)",
 					"request": {
 						"method": "GET",
 						"header": [],
@@ -30,7 +30,8 @@
 							"raw": "{{baseUrl}}/system/status",
 							"host": ["{{baseUrl}}"],
 							"path": ["system", "status"]
-						}
+						},
+						"description": "Returns consolidated engine, ai, and history status."
 					}
 				},
 				{
@@ -44,27 +45,14 @@
 							"path": ["system", "vector-rebuild"]
 						}
 					}
-				},
-				{
-					"name": "Factory Reset",
-					"request": {
-						"method": "POST",
-						"header": [],
-						"url": {
-							"raw": "{{baseUrl}}/system/factory-reset",
-							"host": ["{{baseUrl}}"],
-							"path": ["system", "factory-reset"]
-						},
-						"description": "🧨 DANGER: Wipes all credentials and sessions."
-					}
 				}
 			]
 		},
 		{
-			"name": "Trading",
+			"name": "Market & Account",
 			"item": [
 				{
-					"name": "Get Account Details",
+					"name": "Get Account Metrics",
 					"request": {
 						"method": "GET",
 						"header": [],
@@ -76,7 +64,7 @@
 					}
 				},
 				{
-					"name": "Get Active Trades",
+					"name": "Get Active Trades/Orders",
 					"request": {
 						"method": "GET",
 						"header": [],
@@ -86,9 +74,14 @@
 							"path": ["trades"]
 						}
 					}
-				},
+				}
+			]
+		},
+		{
+			"name": "Operations",
+			"item": [
 				{
-					"name": "Execute Signal",
+					"name": "Execute Signal (DTO)",
 					"request": {
 						"method": "POST",
 						"header": [
@@ -99,12 +92,24 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n    \"text\": \"XAUUSD BUY 2500 SL 2480\",\n    \"source\": \"Postman\"\n}"
+							"raw": "{\n    \"text\": \"XAUUSD BUY 2500.0 SL 2480.0\",\n    \"source\": \"Postman\"\n}"
 						},
 						"url": {
 							"raw": "{{baseUrl}}/signal",
 							"host": ["{{baseUrl}}"],
 							"path": ["signal"]
+						}
+					}
+				},
+				{
+					"name": "Close/Cancel Trade",
+					"request": {
+						"method": "DELETE",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/trade/1234567",
+							"host": ["{{baseUrl}}"],
+							"path": ["trade", "1234567"]
 						}
 					}
 				},
@@ -132,7 +137,7 @@
 			"name": "Configuration",
 			"item": [
 				{
-					"name": "Get Settings",
+					"name": "Get Current Settings",
 					"request": {
 						"method": "GET",
 						"header": [],
@@ -144,7 +149,7 @@
 					}
 				},
 				{
-					"name": "Update Settings",
+					"name": "Update Risk Settings (DTO)",
 					"request": {
 						"method": "PUT",
 						"header": [
@@ -155,7 +160,7 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n    \"risk_usd\": 100,\n    \"rr_target\": 10.0\n}"
+							"raw": "{\n    \"risk_usd\": 100.0,\n    \"rr_target\": 6.0,\n    \"be_rr\": 1.5,\n    \"partial_rr\": 4.0,\n    \"partial_percent\": 0.5\n}"
 						},
 						"url": {
 							"raw": "{{baseUrl}}/settings",
