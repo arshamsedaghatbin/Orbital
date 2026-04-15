@@ -215,6 +215,44 @@ async def reconnect_engine():
     success = await connect_engine()
     return {"status": "success" if success else "failed"}
 
+@app.get("/settings")
+async def get_settings():
+    """Returns current trading settings (Risk, BE, R/R)."""
+    if os.path.exists("settings.json"):
+        with open("settings.json", "r") as f: return json.load(f)
+    return {}
+
+@app.put("/settings")
+async def update_settings(data: Dict[str, Any]):
+    """Saves updated trading settings to settings.json."""
+    with open("settings.json", "w") as f:
+        json.dump(data, f, indent=2)
+    return {"status": "success", "message": "Settings updated"}
+
+@app.get("/system/status")
+async def get_system_status():
+    """Consolidated status of all core services."""
+    account = await get_account() if engine and engine.connection else {}
+    return {
+        "engine": "CONNECTED" if engine and engine.connection else "DISCONNECTED",
+        "ai": "ACTIVE" if ai else "OFFLINE",
+        "history_count": len(load_history()),
+        "queue_count": len(load_pending_queue()),
+        "account": account,
+        "timestamp": datetime.now().isoformat()
+    }
+
+@app.post("/system/vector-rebuild")
+async def rebuild_vector_index():
+    """Manual trigger to refresh the AI signal template index."""
+    if ai and ai.has_gemini:
+        from ai_brain import VectorIndex
+        index = VectorIndex(ai.client)
+        result = await index.build()
+        ai.set_vector_index(index)
+        return {"status": "success", "counts": result.get('counts', 0)}
+    return {"status": "failed", "reason": "AI or Gemini not available"}
+
 # --- Start Command ---
 if __name__ == "__main__":
     uvicorn.run("api:app", host="0.0.0.0", port=8000, reload=True)
