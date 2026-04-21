@@ -4,6 +4,7 @@ import time
 import os
 import json
 import sys
+import re
 from datetime import datetime, timezone
 from dotenv import load_dotenv
 import streamlit as st
@@ -15,6 +16,7 @@ from ai_brain import AIBrain
 from trading_engine import TradingEngine
 from direct_mt5_engine import DirectMT5Engine
 from telegram_listener import TelegramListener
+from bale_watcher import BaleWatcher
 from dashboard import Dashboard
 from vector_index import VectorIndex
 from template_learner import TemplateLearner
@@ -308,32 +310,29 @@ async def bot_worker(state: BotState):
         """Parse text with AI, auto-execute if signal, persist to disk."""
         if not ai:
             print("⚠️ AI not initialized yet.")
+            state.logs.append({"time": datetime.now().strftime("%H:%M:%S"), "type": "ERROR", "preview": f"⚠️ [{source}] AI not initialized — signal dropped."})
             return
             
-        # ── UNIQUE CHECK (LOCKED) ──────────────────────────────────────────────
-        if msg_id and msg_id in state.seen_ids:
-            if not quiet:
-                print(f"⏩ Skipping duplicate signal: ID {msg_id}")
-            return
-        
+        # ── UNIQUE CHECK (atomic check+add to prevent race conditions) ─────────
+        async with (state.lock if state.lock else asyncio.Lock()):
+            if msg_id and msg_id in state.seen_ids:
+                if not quiet:
+                    print(f"⏩ Skipping duplicate signal: ID {msg_id}")
+                return
+            if msg_id:
+                state.seen_ids.add(msg_id)
+
         # ── BOOT TIME FILTER ──────────────────────────────────────────────────
         is_historical = False
         if msg_date:
-            # Ensure msg_date is offset-aware for comparison if it is, else make it naive
-            # Telethon dates are usually UTC offset-aware
             if msg_date.tzinfo is None:
-                # If naive, assume it's local or match boot_time's naivety
-                # But best to keep everything offset-aware
                 msg_date = msg_date.replace(tzinfo=timezone.utc)
-            
+
             if msg_date < state.boot_time:
                 if not quiet:
                     print(f"⏳ Ignoring historical signal from {msg_date} (Boot: {state.boot_time})")
+                    state.logs.append({"time": datetime.now().strftime("%H:%M:%S"), "type": "ERROR", "preview": f"⏳ [{source}] Dropped — msg_date {msg_date} is before boot {state.boot_time}"})
                 return
-        
-        async with (state.lock if state.lock else asyncio.Lock()):
-            if msg_id:
-                state.seen_ids.add(msg_id)
 
         # ── CONTEXT RESOLUTION ─────────────────────────────────────────────
         parent_context = None
@@ -389,9 +388,34 @@ async def bot_worker(state: BotState):
                 if not quiet:
                     print(f"🧠 [Context] No context found. Defaulting to -> {parent_context['symbol']}")
 
+        # ── TP NOISE FILTER ───────────────────────────────────────────────────
+        # Any message/caption containing "tp" is a TP-hit notification — not a new signal.
+        if re.search(r'\btp\b', raw_text or '', re.IGNORECASE):
+            if not quiet:
+                print(f"⏩ [{source}] Text contains 'tp' — treated as NOISE")
+                state.logs.append({
+                    "time": datetime.now().strftime("%H:%M:%S"),
+                    "type": "NOISE",
+                    "preview": f"⊘ [{source}] 'tp' → NOISE: {(raw_text or '')[:60]}"
+                })
+            return
+
         _t0 = time.time()
-        signal_data = await ai.filter_signal(raw_text, image_bytes=image_bytes, parent_context=parent_context, channel_id=source)
+        try:
+            signal_data = await ai.filter_signal(raw_text, image_bytes=image_bytes, parent_context=parent_context, channel_id=source)
+        except Exception as ai_err:
+            signal_data = None
+            print(f"❌ [AI] filter_signal error ({source}): {ai_err}")
+            state.logs.append({"time": datetime.now().strftime("%H:%M:%S"), "type": "ERROR", "preview": f"❌ [{source}] AI error: {ai_err}"})
         _parse_ms = int((time.time() - _t0) * 1000)
+        _gemini_ms = (signal_data or {}).pop("gemini_ms", None)
+        if _gemini_ms is not None:
+            _mode = "vision" if image_bytes else "text"
+            state.logs.append({
+                "time": datetime.now().strftime("%H:%M:%S"),
+                "type": "SYSTEM",
+                "preview": f"⏱ Gemini {_mode}: {_gemini_ms}ms  |  total parse: {_parse_ms}ms"
+            })
         entry = {
             "msg_id":   msg_id,
             "text":     raw_text,
@@ -422,6 +446,52 @@ async def bot_worker(state: BotState):
             if hasattr(_st, 'session_state'):
                 _st.session_state['_toast_msg'] = "🖼️ NOT SUPPORTED: Gemini Key required for Vision"
             return
+
+        # ── Duplicate NEW signal guard ────────────────────────────────────────
+        # If the same entry OR same SL already exists in any currently active
+        # trade or pending queue item for the same symbol → NOISE, always.
+        if signal_data.get('type') == 'NEW':
+            _sym = signal_data.get('symbol')
+            _ent = signal_data.get('entry')
+            _sl  = signal_data.get('sl')
+            if _ent or _sl:
+                _duplicate_reason = None
+
+                # Check live active trades
+                for _t in state.active_trades:
+                    if _t.get('symbol') != _sym:
+                        continue
+                    if _ent and _t.get('entry') == _ent:
+                        _duplicate_reason = f"entry {_ent} already active (order {_t.get('order_id')})"
+                        break
+                    if _sl and _t.get('sl') == _sl:
+                        _duplicate_reason = f"SL {_sl} already active (order {_t.get('order_id')})"
+                        break
+
+                # Check pending queue
+                if not _duplicate_reason:
+                    for _q in state.pending_queue:
+                        if _q.get('symbol') != _sym:
+                            continue
+                        _qd = _q.get('data') or {}
+                        if _ent and _qd.get('entry') == _ent:
+                            _duplicate_reason = f"entry {_ent} already in pending queue"
+                            break
+                        if _sl and _qd.get('sl') == _sl:
+                            _duplicate_reason = f"SL {_sl} already in pending queue"
+                            break
+
+                if _duplicate_reason:
+                    entry['dropped'] = True
+                    entry['drop_reason'] = f"Duplicate — {_duplicate_reason}"
+                    save_history(state.history)
+                    state.logs.append({
+                        "time": datetime.now().strftime("%H:%M:%S"),
+                        "type": "DROPPED",
+                        "preview": f"🚫 [{source}] DROPPED — {_sym} {_duplicate_reason}"
+                    })
+                    print(f"🚫 [Duplicate] {_sym} dropped: {_duplicate_reason}")
+                    return
 
         # ── Auto-learn: AI-parsed categorical signals → add to vector index ──
         # Only short texts (no price numbers) to avoid memorizing specific trade data
@@ -463,6 +533,36 @@ async def bot_worker(state: BotState):
 
         sym    = signal_data.get('symbol', 'XAUUSD')
         sig_type = signal_data.get('type', 'NEW').upper()
+
+        # ── UPDATE KEYWORD: cancel previous pending and replace with new signal ──
+        # "update" / "آپدیت" / "بروزرسانی" in text/caption means:
+        #   previous pending order for this symbol is cancelled, new signal replaces it.
+        _UPDATE_PATTERN = re.compile(r'\b(update|آپدیت|بروزرسانی)\b', re.IGNORECASE)
+        if (sig_type in ('NEW', 'UPDATE')
+                and signal_data.get('entry') and signal_data.get('sl')
+                and _UPDATE_PATTERN.search(raw_text or '')):
+            state.logs.append({
+                "time": datetime.now().strftime("%H:%M:%S"),
+                "type": "SIGNAL",
+                "preview": f"🔄 [{source}] UPDATE keyword — cancelling previous {sym} and replacing"
+            })
+            # 1. Drop from pending queue
+            async with (state.lock if state.lock else asyncio.Lock()):
+                _q_before = len(state.pending_queue)
+                state.pending_queue = [q for q in state.pending_queue if q['symbol'] != sym]
+                if len(state.pending_queue) < _q_before:
+                    save_pending_queue(state.pending_queue)
+                    state.logs.append({
+                        "time": datetime.now().strftime("%H:%M:%S"),
+                        "type": "SIGNAL",
+                        "preview": f"✅ [{source}] Cancelled queued {sym} (update-replace)"
+                    })
+            # 2. Cancel any live pending order on MT5
+            if engine:
+                await engine.cancel_last_order(sym)
+            # 3. Reroute as a fresh NEW signal
+            sig_type = 'NEW'
+            signal_data['type'] = 'NEW'
 
         # ── Global STOP guard ─────────────────────────────────────────────────
         # REENTRY and PULLBACK inherit old trade data — block them if the last
@@ -1638,63 +1738,67 @@ async def bot_worker(state: BotState):
 
     # ── Retry Queue Loop ────────────────────────────────────────────────────────
     async def retry_queue_loop():
-        """Automatically retry trades in the pending queue every 5 seconds."""
+        """Retry trades in the pending queue — exactly 0.5 s after each failure."""
         last_log_time = 0
         while True:
-            await asyncio.sleep(5)
+            await asyncio.sleep(0.1)
             if not engine or not state.pending_queue:
                 continue
 
+            now = time.time()
+
             # Throttle the "Auto-retrying" log to avoid spam
-            current_time = time.time()
-            if current_time - last_log_time > 60: # Log once every minute
+            if now - last_log_time > 60:
                 state.logs.append({
                     "time": datetime.now().strftime("%H:%M:%S"),
                     "type": "SYSTEM",
                     "preview": f"🔄 Auto-retrying {len(state.pending_queue)} pending trades..."
                 })
-                last_log_time = current_time
+                last_log_time = now
 
-            # Iterate copy to allow removal
+            # Iterate copy to allow removal — skip items still in back-off window
             for item in list(state.pending_queue):
-                item['retries'] += 1
-                # Preserve original source if available in data, else default to Manual
-                orig_source = item.get('source', 'Manual') 
-                sym = item['symbol']
-                sym_settings = state.settings.get(sym, state.settings["GLOBAL"])
-                
-                try:
-                    resp = await engine.execute_trade(item['data'], sym_settings, source=orig_source, fallback_to_market=False)
-                    
-                    if resp.get('id'):
-                        state.logs.append({
-                            "time": datetime.now().strftime("%H:%M:%S"),
-                            "type": "SIGNAL",
-                            "preview": f"✅ Queued trade placed: {resp['id']} (Try #{item['retries']})"
-                        })
-                        state.pending_queue.remove(item)
-                        save_pending_queue(state.pending_queue)
-                    else:
-                        # Still failing, update error info
-                        error_type = resp.get('error', 'PRICE_ERROR')
-                        item['error_type'] = error_type
-                        
-                        # CAPPING LOGIC:
-                        # Per user request: PRICE_ERROR, MARKET_CLOSED, etc. must NOT be dropped.
-                        # Only drops technical connection failures after 3 attempts.
-                        is_connectivity_error = error_type in ["DISCONNECTED", "CONNECTION_ERROR", "TIMEOUT", "INTERNAL_ERROR"]
-                        
-                        if is_connectivity_error and item['retries'] >= 3:
+                if now < item.get('next_retry_at', 0):
+                    continue
+
+                # Mark in-flight so next tick doesn't double-fire
+                item['next_retry_at'] = now + 999
+
+                async def _attempt(it=item):
+                    it['retries'] += 1
+                    sym = it['symbol']
+                    sym_settings = state.settings.get(sym, state.settings["GLOBAL"])
+                    orig_source = it.get('source', 'Manual')
+                    try:
+                        resp = await engine.execute_trade(it['data'], sym_settings, source=orig_source, fallback_to_market=False)
+                        if resp.get('id'):
                             state.logs.append({
                                 "time": datetime.now().strftime("%H:%M:%S"),
-                                "type": "ERROR",
-                                "preview": f"🛑 Trade {sym} DROPPED after {item['retries']} failed connection attempts."
+                                "type": "SIGNAL",
+                                "preview": f"✅ Queued trade placed: {resp['id']} (Try #{it['retries']})"
                             })
-                            state.pending_queue.remove(item)
-                        
-                        save_pending_queue(state.pending_queue)
-                except Exception as e:
-                    print(f"Retry Loop Exec Error: {e}")
+                            if it in state.pending_queue:
+                                state.pending_queue.remove(it)
+                            save_pending_queue(state.pending_queue)
+                        else:
+                            it['next_retry_at'] = time.time() + 0.5
+                            error_type = resp.get('error', 'PRICE_ERROR')
+                            it['error_type'] = error_type
+                            is_connectivity_error = error_type in ["DISCONNECTED", "CONNECTION_ERROR", "TIMEOUT", "INTERNAL_ERROR"]
+                            if is_connectivity_error and it['retries'] >= 3:
+                                state.logs.append({
+                                    "time": datetime.now().strftime("%H:%M:%S"),
+                                    "type": "ERROR",
+                                    "preview": f"🛑 Trade {sym} DROPPED after {it['retries']} failed connection attempts."
+                                })
+                                if it in state.pending_queue:
+                                    state.pending_queue.remove(it)
+                            save_pending_queue(state.pending_queue)
+                    except Exception as e:
+                        it['next_retry_at'] = time.time() + 0.5
+                        print(f"Retry Loop Exec Error: {e}")
+
+                asyncio.create_task(_attempt())
 
     # ── Live Telegram Handler ───────────────────────────────────────────
     async def on_new_message(message):
@@ -1879,12 +1983,14 @@ async def bot_worker(state: BotState):
                                 state.telegram_connected = False
 
                 # Tasks list for easy management
+                bale_watcher = BaleWatcher(process_signal, state)
                 tasks = [
                     asyncio.create_task(sync_messages_loop()),
                     asyncio.create_task(engine.monitor_trades(get_settings=lambda sym: state.settings.get(sym, state.settings["GLOBAL"]))),
                     asyncio.create_task(update_metrics_loop()),
                     asyncio.create_task(retry_queue_loop()),
-                    asyncio.create_task(telegram_heartbeat_loop())
+                    asyncio.create_task(telegram_heartbeat_loop()),
+                    asyncio.create_task(bale_watcher.run()),
                 ]
                 
                 # Managed set for non-critical/background initialization tasks

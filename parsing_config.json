@@ -95,7 +95,8 @@
     "order invalid",
     "برداشته   شود",
     "برش دار",
-    "برداته شود"
+    "برداته شود",
+    "stop"
   ],
   "tp_hit_dataset": [
     "test",
@@ -118,5 +119,5 @@
     "اخبار امروز",
     "سلام به همه"
   ],
-  "vector_threshold": 0.82
+  "vector_threshold": 0.91
 }

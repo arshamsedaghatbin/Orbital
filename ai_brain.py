@@ -21,15 +21,24 @@ class ExecutionStrategy(Enum):
     RACE           = "RACE"
 
 # ── Shared system prompt used by both Ollama and Gemini ────────────────────────
-SIGNAL_SYSTEM_PROMPT = """[CRITICAL: DO NOT RETURN 'NOISE' IF SYMBOL + PRICES ARE PRESENT. EVER.]
+SIGNAL_SYSTEM_PROMPT = """[CRITICAL: DO NOT RETURN 'NOISE' IF SYMBOL + DIRECTION ARE PRESENT. EVER.]
 You are a highly accurate specialized trading signal parser.
 
 STRICT INSTRUCTIONS:
 1. PERSIAN/FARSI: Messages starting with "خرید" (Buy), "فروش" (Sell), or mentioning price are VALID commands.
 2. AGGRESSIVE DETECTION: Look for Entry, SL, and Symbol. If found, it IS a NEW signal.
-3. RISK SCAN: Always check for risk markers. Tag `risk_level: "high"` if words like "پرریسک", "با احتیاط", or "high risk" are near.
-4. JSON ONLY: Return nothing but the JSON object.
-5. OUTPUT: Return ONLY JSON with keys: type, symbol, entry, sl, side, tps (list), and risk_level.
+3. VISION: When a chart image is provided, read entry, SL, and TP prices DIRECTLY from the chart's drawn lines, labels, or annotations — even if the text contains only a symbol and direction (e.g. "EURUSD BUYstop", "GBPUSD SELL", "طلا خرید"). Never return NOISE when a chart image is present alongside any recognisable symbol and direction.
+4. RISK SCAN: Always check for risk markers. Tag `risk_level: "high"` if words like "پرریسک", "با احتیاط", or "high risk" are near.
+5. SIDE MAPPING — map any direction keyword to one of these exact values:
+   "BUY"       → buy, long, خرید
+   "SELL"      → sell, short, فروش
+   "BUY_STOP"  → buystop, buy stop, buy_stop, بای استاپ, باي استاپ
+   "SELL_STOP" → sellstop, sell stop, sell_stop, سل استاپ
+   "BUY_LIMIT" → buylimit, buy limit, buy_limit
+   "SELL_LIMIT"→ selllimit, sell limit, sell_limit
+6. UPDATE KEYWORD: If the message/caption contains "update", "آپدیت", or "بروزرسانی" AND provides new entry/SL prices, return type="NEW" with all prices filled — the previous signal will be cancelled by the system automatically. Do NOT return type="UPDATE" for these messages.
+7. JSON ONLY: Return nothing but the JSON object.
+8. OUTPUT: Return ONLY JSON with keys: type, symbol, entry, sl, side, tps (list), and risk_level.
 """
 
 
@@ -95,8 +104,17 @@ class AIBrain:
                 data = json.load(f)
         except: return None
 
-        # Build list of templates to try: Channel-specific first, then Global
-        all_templates = data.get("channels", {}).get(str(channel_id), []) + data.get("global", [])
+        # Build list of templates to try: Channel-specific first, then Global.
+        # For non-Telegram sources (Bale, Manual, etc.) that have no stored channel ID,
+        # try every channel's templates so they get the same coverage as Telegram.
+        channels = data.get("channels", {})
+        channel_key = str(channel_id) if channel_id else ""
+        if channel_key in channels:
+            all_templates = channels[channel_key] + data.get("global", [])
+        else:
+            # Flatten all channel-specific templates + global (deduplicated by object identity)
+            all_channel = [t for ch_templates in channels.values() for t in ch_templates]
+            all_templates = all_channel + data.get("global", [])
         
         compact = self._normalize_text(text)
         
@@ -307,6 +325,7 @@ class AIBrain:
         from google.genai import types as _types  # noqa: F811
 
         loop = asyncio.get_event_loop()
+        _t_gemini = time.time()
         response = await loop.run_in_executor(
             None,
             lambda: self.client.models.generate_content(
@@ -318,7 +337,13 @@ class AIBrain:
                 contents=contents
             )
         )
-        return self._parse_json_output(response.text.strip())
+        _gemini_ms = int((time.time() - _t_gemini) * 1000)
+        mode = "vision" if image_bytes else "text"
+        print(f"⏱ [Gemini] {mode} response: {_gemini_ms}ms")
+        result = self._parse_json_output(response.text.strip())
+        if result:
+            result["gemini_ms"] = _gemini_ms
+        return result
 
     # ── Main AI dispatcher (text routing + fallback) ─────────────────────────
 
@@ -332,7 +357,9 @@ class AIBrain:
             if not self.has_gemini:
                 return {"type": "NOT_SUPPORTED", "reason": "GEMINI_REQUIRED_FOR_VISION"}
             res = await self._gemini_parse(text, image_bytes, parent_context)
-            if res: res["raw_text"] = text
+            if res:
+                res["engine"] = "gemini"
+                res["raw_text"] = text
             return res
 
         # --- ROUTING STRATEGIES ---
@@ -439,7 +466,8 @@ class AIBrain:
         provider = self._get_ai_provider(config)
         
         # ── STAGE 0: TEMPLATE (Instant extraction) ─────────────────────────────
-        if text and not image_bytes:
+        # Also run on image captions — if caption alone is a complete signal, skip vision AI
+        if text:
             t_res = self._template_parse(text, channel_id)
             if t_res:
                 t_res["raw_text"] = text
@@ -448,18 +476,24 @@ class AIBrain:
                 hr_keywords = ["highrisk", "risky", "پرریسک", "ریسک بالا", "با احتیاط", "حجم کم", "0.01"]
                 if any(k in text_low for k in hr_keywords):
                     t_res["risk_level"] = "high"
+                if image_bytes:
+                    print(f"📝 [Caption] Template matched from image caption — skipping vision AI")
                 return t_res
 
         # ── STAGE 1: REGEX (sync gate) ─────────────────────────────────────────
+        # Single-line text: regex result is sufficient — return immediately.
+        # Multi-line text: regex may only partially match; always continue to AI.
         if text and not image_bytes:
+            _lines = [l for l in text.splitlines() if l.strip()]
+            _is_multiline = len(_lines) > 1
             result = self._regex_parse(text, config, parent_context=parent_context)
-            if result:
-                result['parsed_by'] = 'regex' # [USER REQUEST] Commands get 'regex'
+            if result and not _is_multiline:
+                result['parsed_by'] = 'regex'
                 result["raw_text"] = text
-                # High risk check
                 if any(k in text.lower() for k in ["highrisk", "risky", "پرریسک", "ریسک بالا", "با احتیاط", "حجم کم", "0.01"]):
                     result["risk_level"] = "high"
                 return result
+            # Multi-line: fall through to AI regardless of regex result
 
         # AI required if no text or image present
         if not use_ai and not image_bytes:
@@ -468,10 +502,13 @@ class AIBrain:
 
         # ── STAGES 2 + 3: PARALLEL ─────────────────────────────────────────────
         import re as _re
-        _has_prices = bool(text and _re.search(r'\d+\.\d+', text))
-        vec_index = self._vector_index
-        has_vector = (vec_index is not None and vec_index.is_ready
-                      and text and not image_bytes and not _has_prices)
+        # Match both decimal (4900.5) and integer (4900) prices — 3+ digit numbers
+        _has_prices = bool(text and _re.search(r'\b\d{3,}\b', text))
+        # vec_index = self._vector_index                          # [TEMP DISABLED]
+        # has_vector = (vec_index is not None and vec_index.is_ready
+        #               and text and not image_bytes and not _has_prices)
+        vec_index = None                                          # [TEMP DISABLED]
+        has_vector = False                                        # [TEMP DISABLED]
 
         # Determine Strategy
         strategy_str = config.get("execution_strategy", "LOCAL_PRIORITY")
@@ -530,7 +567,14 @@ class AIBrain:
                 ai_result = self._correct_side(ai_result, text.lower() if text else "")
                 if ai_result:
                     if parent_context:
-                        if not ai_result.get('symbol') or ai_result.get('symbol') == 'XAUUSD':
+                        # Only inherit parent symbol when text has no explicit symbol keyword.
+                        # If text mentions gold/xau/eurusd etc., the AI result is authoritative.
+                        text_l = (text or "").lower()
+                        has_explicit_symbol = any(k in text_l for k in [
+                            "xauusd", "xau", "gold", "eurusd", "gbpusd", "usdcad",
+                            "usdjpy", "audusd", "usdchf", "nzdusd", "eurgbp"
+                        ])
+                        if not has_explicit_symbol and (not ai_result.get('symbol') or ai_result.get('symbol') == 'XAUUSD'):
                             if parent_context.get('symbol'):
                                 ai_result['symbol'] = parent_context['symbol']
                     ai_result['parsed_by'] = f"ai:{ai_result.pop('engine', provider)}"

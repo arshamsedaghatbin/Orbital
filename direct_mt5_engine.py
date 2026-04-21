@@ -68,22 +68,36 @@ class DirectMT5Connection:
                 tickets.add(t)
         return tickets
 
-    async def _place_and_get_ticket(self, order: dict, timeout_s: float = 10.0) -> str:
-        """Write order.txt, wait for EA to process, return the new ticket ID."""
+    async def _place_and_get_ticket(self, order: dict, timeout_s: float = 4.0) -> str:
+        """Write order.txt, wait for EA to process, return the new ticket ID.
+
+        Fast path: the EA deletes order.txt once it processes the command (~ms).
+        We poll for that deletion at 50ms intervals instead of waiting for the
+        1-second status.txt refresh cycle.
+        """
         before = self._all_tickets(self._read_status())
         self._write_order(order)
 
         deadline = time.time() + timeout_s
+
+        # Phase 1 — wait for EA to consume order.txt (fast, ~50ms poll)
         while time.time() < deadline:
-            await asyncio.sleep(1.2)
+            await asyncio.sleep(0.05)
+            if not os.path.exists(self._order_path):
+                break  # EA picked it up
+        else:
+            print(f"⚠️ [DirectMT5] _place_and_get_ticket timed out — EA did not consume order.txt.")
+            return f"REJECTED_{int(time.time())}"
+
+        # Phase 2 — order.txt gone; give status.txt one refresh cycle to show new ticket
+        for _ in range(6):  # up to ~1.2s
+            await asyncio.sleep(0.2)
             after = self._all_tickets(self._read_status())
             new = after - before
             if new:
                 return str(next(iter(new)))
 
-        # Timeout — EA did not confirm a new ticket.
-        # Return a sentinel so callers know this order was NOT accepted.
-        print(f"⚠️ [DirectMT5] _place_and_get_ticket timed out — EA may have rejected the order.")
+        print(f"⚠️ [DirectMT5] _place_and_get_ticket: EA consumed order but no new ticket appeared.")
         return f"REJECTED_{int(time.time())}"
 
     def _resolve_ticket(self, ticket_id) -> str:
@@ -715,13 +729,13 @@ class DirectMT5Engine(TradingEngine):
                         data["be_hit"] = True
                         data["sl"] = entry
 
-                    if current_rr >= partial_rr and not data["partial_hit"]:
-                        print(f"💰 [Direct MT5] Taking {symbol} Partial for ticket {t_id_str}")
-                        partial_lot = round(data["lot"] * partial_pct, 2)
-                        pos_volume  = pos.get("volume", data["lot"])
-                        if partial_lot >= 0.01 and partial_lot < pos_volume:
-                            await self.connection.close_position(ticket_id, {"action": "PARTIAL", "volume": partial_lot})
-                        data["partial_hit"] = True
+                    # if current_rr >= partial_rr and not data["partial_hit"]:
+                    #     print(f"💰 [Direct MT5] Taking {symbol} Partial for ticket {t_id_str}")
+                    #     partial_lot = round(data["lot"] * partial_pct, 2)
+                    #     pos_volume  = pos.get("volume", data["lot"])
+                    #     if partial_lot >= 0.01 and partial_lot < pos_volume:
+                    #         await self.connection.close_position(ticket_id, {"action": "PARTIAL", "volume": partial_lot})
+                    #     data["partial_hit"] = True
 
                 if to_remove:
                     self._save_active_trades()

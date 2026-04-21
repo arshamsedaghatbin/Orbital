@@ -983,14 +983,14 @@ class TradingEngine:
                         data['be_hit'] = True
                         data['sl'] = entry
                     
-                    # Partial Close
-                    if current_rr >= partial_rr and not data['partial_hit']:
-                        print(f"💰 Taking {symbol} Partial for ticket {t_id_str}")
-                        partial_lot = round(data['lot'] * partial_pct, 2)
-                        pos_volume = pos['volume']
-                        if partial_lot >= 0.01 and partial_lot < pos_volume:
-                            await self.connection.close_position(ticket_id, {'action': 'PARTIAL', 'volume': partial_lot})
-                        data['partial_hit'] = True
+                    # # Partial Close
+                    # if current_rr >= partial_rr and not data['partial_hit']:
+                    #     print(f"💰 Taking {symbol} Partial for ticket {t_id_str}")
+                    #     partial_lot = round(data['lot'] * partial_pct, 2)
+                    #     pos_volume = pos['volume']
+                    #     if partial_lot >= 0.01 and partial_lot < pos_volume:
+                    #         await self.connection.close_position(ticket_id, {'action': 'PARTIAL', 'volume': partial_lot})
+                    #     data['partial_hit'] = True
                 
             except Exception as e:
                 print(f"Monitoring Loop Error: {e}")

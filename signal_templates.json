@@ -4,7 +4,7 @@
       "name": "Classic 4-Line Signal",
       "regex": "(?P<symbol>XAUUSD|EURUSD|GBPUSD)\\s+(?P<side>BUY|SELL|BUYSTOP|SELLSTOP)\\s+ENTRY\\s+(?P<entry>\\d+\\.?\\d*)\\s+SL\\s+(?P<sl>\\d+\\.?\\d*)",
       "enabled": true,
-      "matches": 0
+      "matches": 1
     }
   ],
   "channels": {
@@ -70,10 +70,45 @@
     ],
     "Telegram": [
       {
+        "name": "Auto-Learned 20260421_1030",
+        "regex": "(?i)(?P<symbol>XAUUSD|GOLD|[A-Z]{3,6})\\s+(?P<side>BUY\\s?STOP|SELL\\s?STOP|BUY\\s?LIMIT|SELL\\s?LIMIT|BUY|SELL)?(?:\\s+UPDATE)?(?:\\s*(?:ENTRY|AT|@)?\\s*(?P<entry>\\d+\\.?\\d*))?(?:\\s*(?:SL|STOPLOSS|STOP)\\s*(?P<sl>\\d+\\.?\\d*))?(?:\\s*(?P<tp1>TP1\\s?\u2705?|TP1[:\\s]+\\d+\\.?\\d*))?(?:\\s*(?P<tp2>TP2\\s?\u2705?|TP2[:\\s]+\\d+\\.?\\d*))?",
+        "enabled": true,
+        "matches": 6,
+        "created_at": "2026-04-21T10:30:14.403525"
+      },
+      {
+        "name": "Auto-Learned 20260421_0959",
+        "regex": "(?i)(?P<symbol>XAUUSD|GOLD|[A-Z]{3,10})(?:\\s+(?P<side>BUY\\s?STOP|SELL\\s?STOP|BUY\\s?LIMIT|SELL\\s?LIMIT|BUY|SELL))?(?:\\s+UPDATE)?(?:\\s+(?:AT|@|ENTRY)?\\s*(?P<entry>\\d+(?:\\.\\d+)?))?(?:\\s+(?:SL|STOP(?:\\s?LOSS)?)\\s*(?P<sl>\\d+(?:\\.\\d+)?))?(?:\\s+TP1\\s*(?P<tp1>\\d+(?:\\.\\d+)?))?",
+        "enabled": true,
+        "matches": 4,
+        "created_at": "2026-04-21T09:59:29.818372"
+      },
+      {
+        "name": "Auto-Learned 20260421_0702",
+        "regex": "(?i)(?P<symbol>XAUUSD|GOLD|[A-Z]{6})\\s+(?P<side>BUY\\s*STOP|SELL\\s*STOP|BUY\\s*LIMIT|SELL\\s*LIMIT|BUY|SELL)(?:\\s+(?:ENTRY|AT|@)?\\s*(?P<entry>\\d+(?:\\.\\d+)?))?(?:\\s+(?:SL|STOP\\s*LOSS|STOP)\\s*(?P<sl>\\d+(?:\\.\\d+)?))?(?:\\s+(?:TP\\s*1|TP1|TARGET1|TP)\\s*(?P<tp1>\\d+(?:\\.\\d+)?))?",
+        "enabled": true,
+        "matches": 7,
+        "created_at": "2026-04-21T07:02:46.714331"
+      },
+      {
+        "name": "Auto-Learned 20260420_1344",
+        "regex": "(?i)(?P<symbol>[A-Z]{3,}|GOLD)(?:\\s+(?P<side>(?:BUY|SELL)(?:\\s?(?:STOP|LIMIT))?))?(?:\\s+(?:ENTRY|AT|@)?\\s*(?P<entry>\\d+(?:\\.\\d+)?))?(?:\\s+.*?SL\\s*[:\\-\\s]*\\s*(?P<sl>\\d+(?:\\.\\d+)?))?(?:\\s+.*?TP1\\s*[:\\-\\s]*\\s*(?P<tp1>\\d+(?:\\.\\d+)?))?(?:\\s+.*?TP2\\s*[:\\-\\s]*\\s*(?P<tp2>\\d+(?:\\.\\d+)?))?(?:\\s+.*?TP3\\s*[:\\-\\s]*\\s*(?P<tp3>\\d+(?:\\.\\d+)?))?",
+        "enabled": true,
+        "matches": 14,
+        "created_at": "2026-04-20T13:44:55.905856"
+      },
+      {
+        "name": "Auto-Learned 20260417_1215",
+        "regex": "(?i)(?P<symbol>XAUUSD|GOLD|[A-Z]{3,6})\\s+(?P<side>(?:BUY|SELL)(?:\\s*(?:STOP|LIMIT))?)?(?:\\s*(?:ENTRY|AT|@)?\\s*(?P<entry>[\\d.]+))?(?:\\s*(?:SL|STOPLOSS)\\s*(?P<sl>[\\d.]+))?(?:\\s*(?:TP1|TARGET1)\\s*(?P<tp1>[\\d.]+))?",
+        "enabled": true,
+        "matches": 21,
+        "created_at": "2026-04-17T12:15:14.976571"
+      },
+      {
         "name": "Auto-Learned 20260413_0108",
         "regex": "(?si)(?=.*?(?P<symbol>XAUUSD|GOLD|GBPUSD|EURUSD))(?=.*?(?P<side>BUY\\s*STOP|SELL\\s*STOP|BUY\\s*LIMIT|SELL\\s*LIMIT|BUY|SELL))(?=.*?(?:ENTRY\\s*)(?P<entry>\\d+(?:\\.\\d+)?))(?=.*?(?:SL\\s*)(?P<sl>\\d+(?:\\.\\d+)?))(?:(?=.*?(?:TP\\s*1|TP1|TP)\\s*(?P<tp1>\\d+(?:\\.\\d+)?)))?[\\s\\S]+",
         "enabled": true,
-        "matches": 79,
+        "matches": 82,
         "created_at": "2026-04-13T01:08:37.352467"
       },
       {
@@ -89,6 +124,78 @@
         "enabled": true,
         "matches": 2,
         "created_at": "2026-04-13T00:50:41.611538"
+      }
+    ],
+    "Bale": [
+      {
+        "name": "Auto-Learned 20260421_1642",
+        "regex": "(?i)(?P<symbol>XAUUSD|GOLD|[A-Z]{3,})\\s*(?P<side>BUY\\s*STOP|SELL\\s*STOP|BUY\\s*LIMIT|SELL\\s*LIMIT|BUY|SELL)\\s*(?:[^0-9\\n]*(?P<entry>\\d+(?:\\.\\d+)?))?\\s*(?:[^0-9\\n]*(?P<sl>\\d+(?:\\.\\d+)?))?\\s*(?:[^0-9\\n]*(?P<tp1>\\d+(?:\\.\\d+)?))?",
+        "enabled": true,
+        "matches": 1,
+        "created_at": "2026-04-21T16:42:27.814783"
+      },
+      {
+        "name": "Auto-Learned 20260421_0954",
+        "regex": "(?i)(?P<symbol>XAUUSD|GOLD|[A-Z]{3,6})\\s*(?P<side>BUY\\s?STOP|SELL\\s?STOP|BUY\\s?LIMIT|SELL\\s?LIMIT|BUY|SELL)?(?:[^0-9]*?entry\\s*)?(?P<entry>[0-9]+(?:\\.[0-9]+)?)?(?:[^0-9]*?sl\\s*)?(?P<sl>[0-9]+(?:\\.[0-9]+)?)?(?:[^0-9]*?tp1\\s*)?(?P<tp1>[0-9]+(?:\\.[0-9]+)?)?",
+        "enabled": true,
+        "matches": 8,
+        "created_at": "2026-04-21T09:54:59.833789"
+      },
+      {
+        "name": "Auto-Learned 20260421_0933",
+        "regex": "(?i)(?P<symbol>XAUUSD|GOLD|[A-Z]{3,6})\\s*(?P<side>BUY(?:\\s*(?:STOP|LIMIT))?|SELL(?:\\s*(?:STOP|LIMIT))?)\\s*(?:entry\\s*)?(?P<entry>\\d+(?:\\.\\d+)?)?\\s*(?:sl\\s*)?(?P<sl>\\d+(?:\\.\\d+)?)?\\s*(?:tp[1-9]?\\s*)?(?P<tp1>\\d+(?:\\.\\d+)?)?",
+        "enabled": true,
+        "matches": 10,
+        "created_at": "2026-04-21T09:33:44.996730"
+      },
+      {
+        "name": "Auto-Learned 20260417_1630",
+        "regex": "(?i)(?P<symbol>XAUUSD|GOLD|[A-Z]{3,}/?[A-Z]{2,})\\s+(?P<side>BUY\\s*LIMIT|SELL\\s*LIMIT|BUY\\s*STOP|SELL\\s*STOP|BUY|SELL)\\s+(?:(?:ENTRY|AT|@)?\\s*)(?P<entry>\\d+(?:\\.\\d+)?)\\s+(?:SL|STOPLOSS|STOP\\s+LOSS)\\s*(?P<sl>\\d+(?:\\.\\d+)?)(?:\\s+(?:TP1|TP|TAKE\\s*PROFIT\\s*1)\\s*(?P<tp1>\\d+(?:\\.\\d+)?))?(?:\\s+(?:TP2|TP|TAKE\\s*PROFIT\\s*2)\\s*(?P<tp2>\\d+(?:\\.\\d+)?))?",
+        "enabled": true,
+        "matches": 0,
+        "created_at": "2026-04-17T16:30:12.345203"
+      },
+      {
+        "name": "Auto-Learned 20260417_1629",
+        "regex": "(?i)(?P<symbol>[A-Z]{2,}|GOLD)\\s+(?P<side>BUY\\s*STOP|SELL\\s*STOP|BUY\\s*LIMIT|SELL\\s*LIMIT|BUY|SELL)\\s+[\\s\\S]*?(?P<entry>\\d+(?:\\.\\d+)?)\\s+[\\s\\S]*?(?:SL|STOP\\s*LOSS)[\\s:-]*(?P<sl>\\d+(?:\\.\\d+)?)(?:\\s+[\\s\\S]*?TP1[\\s:-]*(?P<tp1>\\d+(?:\\.\\d+)?))?",
+        "enabled": true,
+        "matches": 0,
+        "created_at": "2026-04-17T16:29:58.349495"
+      },
+      {
+        "name": "Auto-Learned 20260417_1629",
+        "regex": "(?i)(?P<side>(?:BUY|SELL)(?:\\s*(?:LIMIT|STOP))?)\\s+(?P<symbol>[A-Z0-9/]{2,}|GOLD)\\s+.*?(?:ENTRY|@|AT)?\\s*(?P<entry>\\d+(?:\\.\\d+)?)\\s+.*?SL[:\\s]+(?P<sl>\\d+(?:\\.\\d+)?)\\s*(?:.*?TP1[:\\s]+(?P<tp1>\\d+(?:\\.\\d+)?))?",
+        "enabled": true,
+        "matches": 0,
+        "created_at": "2026-04-17T16:29:36.320811"
+      },
+      {
+        "name": "Auto-Learned 20260417_1629",
+        "regex": "(?i)(?P<symbol>XAUUSD|GOLD|[A-Z]{6}|[A-Z]{3}/[A-Z]{3})\\s+(?P<side>BUY(?:\\s*STOP|LIMIT)?|SELL(?:\\s*STOP|LIMIT)?)\\s+(?:ENTRY|@|AT)?\\s*(?P<entry>\\d+(?:\\.\\d+)?)\\s+(?:.*?SL|STOP LOSS)?[:\\s]*(?P<sl>\\d+(?:\\.\\d+)?)\\s+(?:.*?TP1|TARGET 1)?[:\\s]*(?P<tp1>\\d+(?:\\.\\d+)?)?",
+        "enabled": true,
+        "matches": 0,
+        "created_at": "2026-04-17T16:29:02.386296"
+      },
+      {
+        "name": "Auto-Learned 20260417_1628",
+        "regex": "(?i)(?P<symbol>XAUUSD|GOLD|[A-Z]{3,6})\\s+(?P<side>BUY(?:\\s*(?:STOP|LIMIT))?|SELL(?:\\s*(?:STOP|LIMIT))?)\\s+(?:(?:ENTRY|@)\\s*)?(?P<entry>\\d+(?:\\.\\d+)?)\\s+(?:(?:SL|STOP)\\s*)?(?P<sl>\\d+(?:\\.\\d+)?)(?:\\s+(?:(?:TP1|TP)\\s*)?(?P<tp1>\\d+(?:\\.\\d+)?))?",
+        "enabled": true,
+        "matches": 4,
+        "created_at": "2026-04-17T16:28:31.656554"
+      },
+      {
+        "name": "Auto-Learned 20260417_1628",
+        "regex": "(?i)(?P<symbol>XAUUSD|GOLD|[A-Z]{3,}/?[A-Z]{3,})\\s+(?P<side>BUY\\s?LIMIT|SELL\\s?LIMIT|BUY\\s?STOP|SELL\\s?STOP|BUY|SELL)\\s+(?:ENTRY|PRICE|AT|@)?\\s*(?P<entry>\\d+(?:\\.\\d+)?)\\s+(?:SL|STOP\\s?LOSS)[:\\s]*(?P<sl>\\d+(?:\\.\\d+)?)(?:\\s+(?:TP1|TP|TAKE\\s?PROFIT)[:\\s]*(?P<tp1>\\d+(?:\\.\\d+)?))?",
+        "enabled": true,
+        "matches": 0,
+        "created_at": "2026-04-17T16:28:09.676349"
+      },
+      {
+        "name": "Auto-Learned 20260417_1627",
+        "regex": "(?i)(?P<symbol>XAUUSD|GOLD|[A-Z]{3,}(?:\\/?[A-Z]{3,})?)\\s+(?P<side>(?:BUY|SELL)(?:\\s+(?:STOP|LIMIT))?)\\s+(?:ENTRY|AT|@)?\\s*(?P<entry>\\d+(?:\\.\\d+)?)\\s+(?:SL|STOPLOSS)[:\\s]+(?P<sl>\\d+(?:\\.\\d+)?)(?:\\s+(?:TP1|TP)[:\\s]+(?P<tp1>\\d+(?:\\.\\d+)?))?",
+        "enabled": true,
+        "matches": 0,
+        "created_at": "2026-04-17T16:27:55.683056"
       }
     ]
   }
