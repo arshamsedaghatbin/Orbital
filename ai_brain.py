@@ -37,8 +37,9 @@ STRICT INSTRUCTIONS:
    "BUY_LIMIT" → buylimit, buy limit, buy_limit
    "SELL_LIMIT"→ selllimit, sell limit, sell_limit
 6. UPDATE KEYWORD: If the message/caption contains "update", "آپدیت", or "بروزرسانی" AND provides new entry/SL prices, return type="NEW" with all prices filled — the previous signal will be cancelled by the system automatically. Do NOT return type="UPDATE" for these messages.
-7. JSON ONLY: Return nothing but the JSON object.
-8. OUTPUT: Return ONLY JSON with keys: type, symbol, entry, sl, side, tps (list), and risk_level.
+7. PULLBACK DETECTION: If the user provides a chart image showing a trajectory or zig-zag arrow that plunges down into a support area *before* rising back up to the entry level (or vice-versa for sells), OR if the text explicitly says "deep pullback", "activation zone", or "bounce", YOU MUST output `"pullback": true`. Otherwise, output `"pullback": false`.
+8. JSON ONLY: Return nothing but the JSON object.
+9. OUTPUT: Return ONLY JSON with keys: type, symbol, entry, sl, side, tps (list), risk_level, and pullback (boolean).
 """
 
 
@@ -141,6 +142,7 @@ class AIBrain:
                         "sl": float(groups.get("sl", 0)) if groups.get("sl") else None,
                         "tps": [],
                         "risk_level": "normal",
+                        "pullback": False,
                         "parsed_by": "magic" if groups.get("type", "NEW").upper() == "NEW" else "regex"
                     }
                     
@@ -465,6 +467,11 @@ class AIBrain:
         strategy_str = config.get("execution_strategy", "LOCAL_PRIORITY")
         provider = self._get_ai_provider(config)
         
+        # --- HARD BLOCK: Any message/caption containing 'TP' is immediately dropped as NOISE ---
+        if text and "tp" in text.lower():
+            print("⚡ [Fast Path] Instantly dropping message as NOISE due to 'tp' hard block.")
+            return {"type": "NOISE", "reason": "TP_keyword_banned"}
+            
         # ── STAGE 0: TEMPLATE (Instant extraction) ─────────────────────────────
         # Also run on image captions — if caption alone is a complete signal, skip vision AI
         if text:

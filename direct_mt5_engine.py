@@ -33,13 +33,16 @@ class DirectMT5Connection:
     # ── Low-level helpers ──────────────────────────────────────────────────────
 
     def _read_status(self) -> dict:
-        try:
-            with open(self._status_path, "r") as f:
-                content = f.read().strip()
-            if content:
-                return json.loads(content)
-        except Exception:
-            pass
+        """Read status.txt, retrying once if the file is empty (EA mid-write race)."""
+        for _ in range(3):
+            try:
+                with open(self._status_path, "r") as f:
+                    content = f.read().strip()
+                if content:
+                    return json.loads(content)
+            except Exception:
+                pass
+            time.sleep(0.05)
         return {}
 
     def _write_order(self, order: dict):
@@ -68,36 +71,24 @@ class DirectMT5Connection:
                 tickets.add(t)
         return tickets
 
-    async def _place_and_get_ticket(self, order: dict, timeout_s: float = 4.0) -> str:
-        """Write order.txt, wait for EA to process, return the new ticket ID.
-
-        Fast path: the EA deletes order.txt once it processes the command (~ms).
-        We poll for that deletion at 50ms intervals instead of waiting for the
-        1-second status.txt refresh cycle.
-        """
+    async def _place_and_get_ticket(self, order: dict, timeout_s: float = 10.0) -> str:
+        """Write order.txt, wait for EA to process, return the new ticket ID."""
+        # Read before-snapshot twice with a small gap and union them so no
+        # existing ticket is missed due to a partial/empty file read.
         before = self._all_tickets(self._read_status())
+        await asyncio.sleep(0.1)
+        before |= self._all_tickets(self._read_status())
         self._write_order(order)
 
         deadline = time.time() + timeout_s
-
-        # Phase 1 — wait for EA to consume order.txt (fast, ~50ms poll)
         while time.time() < deadline:
-            await asyncio.sleep(0.05)
-            if not os.path.exists(self._order_path):
-                break  # EA picked it up
-        else:
-            print(f"⚠️ [DirectMT5] _place_and_get_ticket timed out — EA did not consume order.txt.")
-            return f"REJECTED_{int(time.time())}"
-
-        # Phase 2 — order.txt gone; give status.txt one refresh cycle to show new ticket
-        for _ in range(6):  # up to ~1.2s
-            await asyncio.sleep(0.2)
+            await asyncio.sleep(0.3)
             after = self._all_tickets(self._read_status())
             new = after - before
             if new:
                 return str(next(iter(new)))
 
-        print(f"⚠️ [DirectMT5] _place_and_get_ticket: EA consumed order but no new ticket appeared.")
+        print(f"⚠️ [DirectMT5] _place_and_get_ticket timed out — EA may have rejected the order.")
         return f"REJECTED_{int(time.time())}"
 
     def _resolve_ticket(self, ticket_id) -> str:
@@ -234,57 +225,65 @@ class DirectMT5Connection:
 
     # ── Order placement ───────────────────────────────────────────────────────
 
-    async def create_market_buy_order(self, symbol, volume, stop_loss, take_profit):
+    async def create_market_buy_order(self, symbol, volume, stop_loss, take_profit, tps=None):
         ticket = await self._place_and_get_ticket({
             "symbol": symbol, "action": "BUY",
             "volume": str(volume), "price": "0",
             "sl": str(stop_loss), "tp": str(take_profit), "ticket": "0",
+            "tps": ",".join(str(float(x)) for x in (tps or []))
         })
         return {"orderId": ticket}
 
-    async def create_market_sell_order(self, symbol, volume, stop_loss, take_profit):
+    async def create_market_sell_order(self, symbol, volume, stop_loss, take_profit, tps=None):
         ticket = await self._place_and_get_ticket({
             "symbol": symbol, "action": "SELL",
             "volume": str(volume), "price": "0",
             "sl": str(stop_loss), "tp": str(take_profit), "ticket": "0",
+            "tps": ",".join(str(float(x)) for x in (tps or []))
         })
         return {"orderId": ticket}
 
-    async def create_stop_buy_order(self, symbol, volume, open_price, stop_loss, take_profit):
+    async def create_stop_buy_order(self, symbol, volume, open_price, stop_loss, take_profit, tps=None, pullback=False):
         ticket = await self._place_and_get_ticket({
             "symbol": symbol, "action": "BUY_STOP",
             "volume": str(volume), "price": str(open_price),
             "sl": str(stop_loss), "tp": str(take_profit), "ticket": "0",
+            "tps": ",".join(str(float(x)) for x in (tps or [])),
+            "pullback": "1" if pullback else "0"
         })
         if str(ticket).startswith("REJECTED_"):
             raise Exception("PRICE_ERROR: EA rejected BUY_STOP order (invalid price or market conditions)")
         return {"orderId": ticket}
 
-    async def create_stop_sell_order(self, symbol, volume, open_price, stop_loss, take_profit):
+    async def create_stop_sell_order(self, symbol, volume, open_price, stop_loss, take_profit, tps=None, pullback=False):
         ticket = await self._place_and_get_ticket({
             "symbol": symbol, "action": "SELL_STOP",
             "volume": str(volume), "price": str(open_price),
             "sl": str(stop_loss), "tp": str(take_profit), "ticket": "0",
+            "tps": ",".join(str(float(x)) for x in (tps or [])),
+            "pullback": "1" if pullback else "0"
         })
         if str(ticket).startswith("REJECTED_"):
             raise Exception("PRICE_ERROR: EA rejected SELL_STOP order (invalid price or market conditions)")
         return {"orderId": ticket}
 
-    async def create_limit_buy_order(self, symbol, volume, open_price, stop_loss, take_profit):
+    async def create_limit_buy_order(self, symbol, volume, open_price, stop_loss, take_profit, tps=None):
         ticket = await self._place_and_get_ticket({
             "symbol": symbol, "action": "BUY_LIMIT",
             "volume": str(volume), "price": str(open_price),
             "sl": str(stop_loss), "tp": str(take_profit), "ticket": "0",
+            "tps": ",".join(str(float(x)) for x in (tps or []))
         })
         if str(ticket).startswith("REJECTED_"):
             raise Exception("PRICE_ERROR: EA rejected BUY_LIMIT order (invalid price or market conditions)")
         return {"orderId": ticket}
 
-    async def create_limit_sell_order(self, symbol, volume, open_price, stop_loss, take_profit):
+    async def create_limit_sell_order(self, symbol, volume, open_price, stop_loss, take_profit, tps=None):
         ticket = await self._place_and_get_ticket({
             "symbol": symbol, "action": "SELL_LIMIT",
             "volume": str(volume), "price": str(open_price),
             "sl": str(stop_loss), "tp": str(take_profit), "ticket": "0",
+            "tps": ",".join(str(float(x)) for x in (tps or []))
         })
         if str(ticket).startswith("REJECTED_"):
             raise Exception("PRICE_ERROR: EA rejected SELL_LIMIT order (invalid price or market conditions)")

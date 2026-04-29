@@ -432,44 +432,30 @@ class TradingEngine:
         # Ensure TP is rounded to valid tick size if possible
         tp = round(entry + (distance * rr_target) if is_buy_side else entry - (distance * rr_target), 5)
 
+        # Generate intermediate TPs if none provided
+        tps = data.get('tps', [])
+        if not tps and distance > 0:
+            step = 1
+            while step < rr_target:
+                step_tp = round(entry + (distance * step) if is_buy_side else entry - (distance * step), 5)
+                tps.append(step_tp)
+                step += 1
+            data['tps'] = tps
+
         try:
             if is_market:
                 # Market order — direction from is_buy_side
                 if is_buy_side:
-                    result = await self.connection.create_market_buy_order(symbol, lot, sl, tp)
+                    result = await self.connection.create_market_buy_order(symbol, lot, sl, tp, tps=data.get('tps', []))
                 else:
-                    result = await self.connection.create_market_sell_order(symbol, lot, sl, tp)
+                    result = await self.connection.create_market_sell_order(symbol, lot, sl, tp, tps=data.get('tps', []))
             else:
                 if is_buy_side:
-                    if entry > current_market_price:
-                        result = await self.connection.create_stop_buy_order(symbol, lot, entry, sl, tp)
-                    else:
-                        if fallback_to_market:
-                            print(f"🚀 BUY entry {entry} <= market {current_market_price}. Entering at MARKET.")
-                            market_distance = abs(current_market_price - sl)
-                            if market_distance > 0:
-                                lot = self._recalculate_lot(risk_usd, market_distance, tick_size, tick_value, pip_value_per_lot, lot_step, min_lot)
-                                tp = round(current_market_price + (market_distance * rr_target), 5)
-                                print(f"♻️ [Engine] Recalculated lot for market fill at {current_market_price}: {lot} (dist: {market_distance:.5f})")
-                            result = await self.connection.create_market_buy_order(symbol, lot, sl, tp)
-                        else:
-                            print(f"⏳ BUY entry {entry} <= market {current_market_price}. Queueing (PRICE_ERROR).")
-                            return {"id": None, "error": "PRICE_ERROR"}
+                    # ALWAYS send orders to MT5, whether valid or not. Let MQL5 EA's Virtual Queue handle it!
+                    result = await self.connection.create_stop_buy_order(symbol, lot, entry, sl, tp, tps=data.get('tps', []), pullback=data.get('pullback', False))
                 else:
-                    if entry < current_market_price:
-                        result = await self.connection.create_stop_sell_order(symbol, lot, entry, sl, tp)
-                    else:
-                        if fallback_to_market:
-                            print(f"🚀 SELL entry {entry} >= market {current_market_price}. Entering at MARKET.")
-                            market_distance = abs(current_market_price - sl)
-                            if market_distance > 0:
-                                lot = self._recalculate_lot(risk_usd, market_distance, tick_size, tick_value, pip_value_per_lot, lot_step, min_lot)
-                                tp = round(current_market_price - (market_distance * rr_target), 5)
-                                print(f"♻️ [Engine] Recalculated lot for market fill at {current_market_price}: {lot} (dist: {market_distance:.5f})")
-                            result = await self.connection.create_market_sell_order(symbol, lot, sl, tp)
-                        else:
-                            print(f"⏳ SELL entry {entry} >= market {current_market_price}. Queueing (PRICE_ERROR).")
-                            return {"id": None, "error": "PRICE_ERROR"}
+                    # ALWAYS send orders to MT5
+                    result = await self.connection.create_stop_sell_order(symbol, lot, entry, sl, tp, tps=data.get('tps', []), pullback=data.get('pullback', False))
             
             order_id = str(result['orderId'])
             if source == "Telegram":
@@ -643,6 +629,34 @@ class TradingEngine:
         except Exception as e:
             print(f"Modify Trade Error: {e}")
             return None
+
+    async def set_pullback_on_last_trade(self, symbol: str) -> bool:
+        if not self.connection:
+            if not await self.connect():
+                return False
+        try:
+            orders = await self.connection.get_orders()
+            target = symbol.upper()
+            sym_orders = [o for o in orders if o['symbol'].upper().startswith(target)] or \
+                         [o for o in orders if target in o['symbol'].upper()]
+            
+            if not sym_orders:
+                print(f"[SetPullback] No active MT5 pending orders found for {symbol}")
+                return False
+                
+            sorted_by_id = sorted(sym_orders, key=lambda x: str(x.get('id')), reverse=True)
+            ticket_to_update = sorted_by_id[0]['id']
+            
+            self.connection._write_order({
+                "action": "MAKE_PULLBACK",
+                "ticket": str(ticket_to_update)
+            })
+            print(f"✅ Pullback Activated artificially on Virtual Order: {ticket_to_update}")
+            return True
+            
+        except Exception as e:
+            print(f"Error setting pullback on {symbol}: {e}")
+            return False
 
     async def cancel_last_order(self, symbol: str) -> bool:
         """

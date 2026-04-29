@@ -1404,6 +1404,8 @@ The EA writes `status.txt` every second. Once it's running, the Test below will 
                         order_status = "🛑 Global STOP"
                     elif msg.get('managed'):
                         order_status = "🎯 Profit Managed"
+                    elif msg.get('pullback_activated'):
+                        order_status = "🧲 Deep Pull Activated"
                     elif msg.get('updated'):
                         order_status = "🔄 Entry/SL Updated"
                     elif error == "MARKET_CLOSED":

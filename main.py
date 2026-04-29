@@ -697,6 +697,49 @@ async def bot_worker(state: BotState):
                         "preview": f"⚠️ [{source}] No open order found to cancel for {sym}."
                     })
 
+        elif sig_type == 'PULLBACK':
+            state.logs.append({
+                "time": datetime.now().strftime("%H:%M:%S"),
+                "type": "SIGNAL",
+                "preview": f"[{source}] 🧲 PULLBACK signal received for {sym}"
+            })
+
+            # ── Step 1: order still in pending queue (not yet on MT5) ──────────
+            queued_pullback = False
+            async with (state.lock if state.lock else asyncio.Lock()):
+                for q_item in state.pending_queue:
+                    if q_item['symbol'] == sym:
+                        q_item['data']['pullback'] = True
+                        q_item['retries'] = 0  # force immediate retry with pullback flag
+                        queued_pullback = True
+                        save_pending_queue(state.pending_queue)
+                        break
+
+            if queued_pullback:
+                state.logs.append({
+                    "time": datetime.now().strftime("%H:%M:%S"),
+                    "type": "SIGNAL",
+                    "preview": f"✅ [{source}] Pullback flag set on queued {sym} order — will retry with pullback."
+                })
+            elif engine:
+                # ── Step 2: order already on MT5 ────────────────────────────────
+                success = await engine.set_pullback_on_last_trade(sym)
+                if success:
+                    state.logs.append({
+                        "time": datetime.now().strftime("%H:%M:%S"),
+                        "type": "SIGNAL",
+                        "preview": f"✅ [{source}] Pullback mode activated on MT5 order for {sym}!"
+                    })
+                else:
+                    state.logs.append({
+                        "time": datetime.now().strftime("%H:%M:%S"),
+                        "type": "NOISE",
+                        "preview": f"❌ [{source}] Pullback activation failed — no pending order found for {sym} in queue or MT5."
+                    })
+
+            entry['pullback_activated'] = True
+            save_history(state.history)
+
         elif sig_type == 'REENTRY':
             state.logs.append({
                 "time": datetime.now().strftime("%H:%M:%S"),
