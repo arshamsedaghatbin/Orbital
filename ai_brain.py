@@ -51,7 +51,7 @@ class AIBrain:
         """
         self.gemini_key = api_key or ""
         self.client     = None
-        self.model_id   = "gemini-1.5-flash-8b-latest"
+        self.model_id   = "gemini-flash-latest"
         self._vector_index = None   # Injected after construction by bot_worker
 
         # Only init Gemini client if a key is available
@@ -297,27 +297,6 @@ class AIBrain:
             print(f"⚠️ [AIBrain] Ollama internal error: {e}")
             return None
 
-    def _compress_image(self, image_bytes: bytes, max_size=(1024, 1024), quality=80) -> bytes:
-        """Resize and compress image to speed up upload and processing."""
-        try:
-            from PIL import Image
-            import io
-            img = Image.open(io.BytesIO(image_bytes))
-            
-            # Convert to RGB if necessary (e.g. RGBA/PNG to JPEG)
-            if img.mode in ("RGBA", "P"):
-                img = img.convert("RGB")
-            
-            # Resize while maintaining aspect ratio
-            img.thumbnail(max_size, Image.Resampling.LANCZOS)
-            
-            output = io.BytesIO()
-            img.save(output, format="JPEG", quality=quality, optimize=True)
-            return output.getvalue()
-        except Exception as e:
-            print(f"⚠️ [AIBrain] Image compression failed: {e}")
-            return image_bytes
-
     # ── Gemini Engine (text + vision) ────────────────────────────────────────
 
     async def _gemini_parse(self, text: str, image_bytes: bytes | None, parent_context: dict | None = None) -> dict | None:
@@ -331,8 +310,7 @@ class AIBrain:
 
         contents = []
         if image_bytes:
-            compressed = self._compress_image(image_bytes)
-            contents.append(types.Part.from_bytes(data=compressed, mime_type="image/jpeg"))
+            contents.append(types.Part.from_bytes(data=image_bytes, mime_type="image/jpeg"))
         if text:
             content_text = text
             if parent_context:
